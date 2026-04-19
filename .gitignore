@@ -1,0 +1,31 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python / tooling
+__pycache__/
+*.pyc
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Android / Gradle
+.gradle/
+build/
+*/build/
+local.properties
+captures/
+
+# Android artifacts
+*.apk
+*.aab
+*.ap_
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
