@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.XiaoHeiApp" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#1459D4</item>
+        <item name="colorPrimaryVariant">#0D3F97</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#0BAE8D</item>
+        <item name="android:statusBarColor">#0D3F97</item>
+    </style>
+</resources>

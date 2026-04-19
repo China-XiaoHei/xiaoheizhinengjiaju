@@ -24,10 +24,6 @@
 #define STATUS_LED_PIN 2
 #endif
 
-#ifndef DEVICE_NAME
-#define DEVICE_NAME "鱼缸照明"
-#endif
-
 #ifndef MQTT_HOST
 #define MQTT_HOST "broker.emqx.io"
 #endif
@@ -53,6 +49,7 @@ namespace {
 constexpr size_t STM32_BUFFER_SIZE = 96;
 constexpr uint32_t MQTT_RECONNECT_INTERVAL_MS = 5000;
 constexpr uint32_t STATE_QUERY_INTERVAL_MS = 4000;
+const char *const DEVICE_NAME = u8"鱼缸照明";
 
 SoftwareSerial stm32Serial(STM32_RX_PIN, STM32_TX_PIN);
 WiFiClient wifiClient;
@@ -251,6 +248,7 @@ void setup() {
 
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setCallback(handleMqttMessage);
+  mqttClient.setBufferSize(256);
 
   WiFi.mode(WIFI_STA);
   wifiManager.setConfigPortalTimeout(180);
@@ -268,6 +266,8 @@ void setup() {
 }
 
 void loop() {
+  readStm32Serial();
+
   if (WiFi.status() != WL_CONNECTED) {
     setStatusLed(false);
     delay(50);
@@ -276,7 +276,6 @@ void loop() {
 
   ensureMqttConnection();
   mqttClient.loop();
-  readStm32Serial();
 
   if (!stateKnown) {
     ensureStateQuery();

@@ -46,3 +46,10 @@ MQTT 默认主题前缀：
 - [ESP8266/src/main.cpp](/E:/ST工程/小黑家居/ESP8266/src/main.cpp)
 - [小黑APP/FishLightApp/app/src/main/java/com/xiaohei/fishlight/MainActivity.java](/E:/ST工程/小黑家居/小黑APP/FishLightApp/app/src/main/java/com/xiaohei/fishlight/MainActivity.java)
 - [docs/接线说明.md](/E:/ST工程/小黑家居/docs/接线说明.md)
+
+## 当前构建结果
+
+- 安卓 APK 已生成：`小黑APP/output/小黑APP-鱼缸照明-v2.0.0-release.apk`
+- `ESP8266` 固件已编译通过
+- `STM32` 固件已编译通过
+- `ESP8266` 已尝试烧录一次，但设备未进入下载模式，暂未刷入成功
