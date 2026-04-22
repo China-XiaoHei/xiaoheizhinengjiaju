@@ -5,9 +5,7 @@
 #include <SoftwareSerial.h>
 #include <WiFiManager.h>
 
-#ifndef SERIAL_BAUD
-#define SERIAL_BAUD 115200
-#endif
+#include <cstring>
 
 #ifndef STM32_UART_BAUD
 #define STM32_UART_BAUD 57600
@@ -21,12 +19,24 @@
 #define STM32_TX_PIN 5
 #endif
 
+#ifndef STM32_USE_HW_UART
+#define STM32_USE_HW_UART 1
+#endif
+
+#ifndef STM32_USE_SW_UART
+#define STM32_USE_SW_UART 1
+#endif
+
 #ifndef STATUS_LED_PIN
 #define STATUS_LED_PIN 2
 #endif
 
 #ifndef MQTT_HOST
-#define MQTT_HOST "broker.emqx.io"
+#define MQTT_HOST "broker-cn.emqx.io"
+#endif
+
+#ifndef MQTT_HOST_BACKUP
+#define MQTT_HOST_BACKUP "broker.emqx.io"
 #endif
 
 #ifndef MQTT_PORT
@@ -38,19 +48,19 @@
 #endif
 
 #ifndef AP_SSID
-#define AP_SSID "XiaoHei-Aquarium"
+#define AP_SSID u8"ESP小黑"
 #endif
 
 #ifndef AP_PASSWORD
-#define AP_PASSWORD "12345678"
+#define AP_PASSWORD "sunjunjie@1"
 #endif
 
 #ifndef HOME_WIFI_SSID
-#define HOME_WIFI_SSID ""
+#define HOME_WIFI_SSID u8"春风直达拉萨"
 #endif
 
 #ifndef HOME_WIFI_PASSWORD
-#define HOME_WIFI_PASSWORD ""
+#define HOME_WIFI_PASSWORD "sunjunjie@1"
 #endif
 
 namespace {
@@ -61,17 +71,24 @@ constexpr uint32_t STATE_QUERY_INTERVAL_IDLE_MS = 3000;
 constexpr uint32_t STATE_QUERY_INTERVAL_KEEPALIVE_MS = 12000;
 constexpr uint32_t STATUS_LED_BLINK_MS = 500;
 constexpr uint32_t HOME_WIFI_CONNECT_TIMEOUT_MS = 20000;
-constexpr char DEVICE_NAME[] = "鱼缸照明";
-constexpr char LOCAL_AP_SSID[] = u8"ESP小黑";
+constexpr char DEVICE_NAME[] = u8"鱼缸照明";
 
-SoftwareSerial stm32Serial(STM32_RX_PIN, STM32_TX_PIN);
+enum class Stm32Link : uint8_t {
+  NONE = 0,
+  HW_UART = 1,
+  SW_UART = 2
+};
+
+SoftwareSerial stm32SwSerial(STM32_RX_PIN, STM32_TX_PIN);
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 ESP8266WebServer httpServer(80);
 WiFiManager wifiManager;
 
-char stm32Buffer[STM32_BUFFER_SIZE];
-size_t stm32Length = 0;
+char stm32BufferHw[STM32_BUFFER_SIZE];
+char stm32BufferSw[STM32_BUFFER_SIZE];
+size_t stm32LengthHw = 0;
+size_t stm32LengthSw = 0;
 
 String topicState;
 String topicAvailability;
@@ -84,9 +101,12 @@ String topicCmdQuery;
 unsigned long lastMqttReconnectAttemptMs = 0;
 unsigned long lastStateQueryMs = 0;
 unsigned long lastBlinkMs = 0;
+unsigned long lastStm32RxMs = 0;
 
 bool mqttOnline = false;
 bool ledPhase = false;
+Stm32Link activeLink = Stm32Link::NONE;
+String mqttConnectedHost;
 
 struct DeviceState {
   bool known = false;
@@ -99,6 +119,38 @@ struct DeviceState {
 };
 
 DeviceState state;
+
+bool isStm32LinkEnabled(Stm32Link link) {
+  switch (link) {
+    case Stm32Link::HW_UART:
+#if STM32_USE_HW_UART
+      return true;
+#else
+      return false;
+#endif
+    case Stm32Link::SW_UART:
+#if STM32_USE_SW_UART
+      return true;
+#else
+      return false;
+#endif
+    case Stm32Link::NONE:
+    default:
+      return false;
+  }
+}
+
+String stm32LinkName(Stm32Link link) {
+  switch (link) {
+    case Stm32Link::HW_UART:
+      return "HW_UART";
+    case Stm32Link::SW_UART:
+      return "SW_UART";
+    case Stm32Link::NONE:
+    default:
+      return "NONE";
+  }
+}
 
 void setStatusLed(bool on) {
   digitalWrite(STATUS_LED_PIN, on ? LOW : HIGH);
@@ -127,10 +179,37 @@ void updateLed() {
   }
 }
 
+String jsonEscape(const String &input) {
+  String output;
+  output.reserve(input.length() + 8);
+  for (size_t i = 0; i < static_cast<size_t>(input.length()); ++i) {
+    char ch = input[static_cast<unsigned int>(i)];
+    if (ch == '\\' || ch == '"') {
+      output += '\\';
+      output += ch;
+      continue;
+    }
+    if (ch == '\n') {
+      output += "\\n";
+      continue;
+    }
+    if (ch == '\r') {
+      output += "\\r";
+      continue;
+    }
+    if (ch == '\t') {
+      output += "\\t";
+      continue;
+    }
+    output += ch;
+  }
+  return output;
+}
+
 String buildStateJson() {
   String json = "{";
   json += "\"deviceName\":\"";
-  json += DEVICE_NAME;
+  json += jsonEscape(DEVICE_NAME);
   json += "\",\"light\":";
   json += state.light ? "true" : "false";
   json += ",\"pump\":";
@@ -140,12 +219,22 @@ String buildStateJson() {
   json += ",\"overall\":";
   json += state.overall ? "true" : "false";
   json += ",\"source\":\"";
-  json += state.source;
+  json += jsonEscape(state.source);
   json += "\",\"known\":";
   json += state.known ? "true" : "false";
   json += ",\"ip\":\"";
-  json += WiFi.localIP().toString();
-  json += "\"}";
+  json += jsonEscape(WiFi.localIP().toString());
+  json += "\",\"wifiSsid\":\"";
+  json += jsonEscape(WiFi.SSID());
+  json += "\",\"mqttHost\":\"";
+  json += jsonEscape(mqttConnectedHost);
+  json += "\",\"mqttOnline\":";
+  json += mqttOnline ? "true" : "false";
+  json += ",\"serialLink\":\"";
+  json += stm32LinkName(activeLink);
+  json += "\",\"lastStm32RxMs\":";
+  json += String(lastStm32RxMs);
+  json += "}";
   return json;
 }
 
@@ -157,11 +246,39 @@ void publishStateToCloud() {
   mqttClient.publish(topicState.c_str(), payload.c_str(), true);
 }
 
+void writeLineToLink(Stm32Link link, const String &line) {
+  if (!isStm32LinkEnabled(link)) {
+    return;
+  }
+
+  if (link == Stm32Link::HW_UART) {
+#if STM32_USE_HW_UART
+    Serial.print(line);
+    Serial.print('\n');
+#endif
+    return;
+  }
+
+  if (link == Stm32Link::SW_UART) {
+#if STM32_USE_SW_UART
+    stm32SwSerial.print(line);
+    stm32SwSerial.print('\n');
+#endif
+  }
+}
+
 void sendToStm32(const String &line) {
-  stm32Serial.print(line);
-  stm32Serial.print('\n');
-  Serial.print("STM32 <= ");
-  Serial.println(line);
+  if (activeLink != Stm32Link::NONE && isStm32LinkEnabled(activeLink)) {
+    writeLineToLink(activeLink, line);
+    return;
+  }
+
+#if STM32_USE_HW_UART
+  writeLineToLink(Stm32Link::HW_UART, line);
+#endif
+#if STM32_USE_SW_UART
+  writeLineToLink(Stm32Link::SW_UART, line);
+#endif
 }
 
 void sendQueryToStm32() {
@@ -190,17 +307,24 @@ void applyStateToken(const String &token) {
   }
 }
 
-void handleStateLine(const String &line) {
+void markStm32LinkAlive(Stm32Link source) {
+  lastStm32RxMs = millis();
+  if (isStm32LinkEnabled(source)) {
+    activeLink = source;
+  }
+}
+
+void handleStateLine(const String &line, Stm32Link source) {
   if (line == "PONG") {
+    markStm32LinkAlive(source);
     return;
   }
 
   if (!line.startsWith("STATE,")) {
-    Serial.print("STM32 => ");
-    Serial.println(line);
     return;
   }
 
+  markStm32LinkAlive(source);
   state.known = true;
   state.updatedAtMs = millis();
   state.overall = false;
@@ -225,28 +349,41 @@ void handleStateLine(const String &line) {
   publishStateToCloud();
 }
 
-void readStm32Serial() {
-  while (stm32Serial.available() > 0) {
-    char ch = static_cast<char>(stm32Serial.read());
-    if (ch == '\r') {
-      continue;
-    }
-
-    if (ch == '\n') {
-      stm32Buffer[stm32Length] = '\0';
-      if (stm32Length > 0) {
-        handleStateLine(String(stm32Buffer));
-      }
-      stm32Length = 0;
-      continue;
-    }
-
-    if (stm32Length < (STM32_BUFFER_SIZE - 1)) {
-      stm32Buffer[stm32Length++] = ch;
-    } else {
-      stm32Length = 0;
-    }
+void processStm32Byte(char ch, char *buffer, size_t &length, Stm32Link source) {
+  if (ch == '\r') {
+    return;
   }
+
+  if (ch == '\n') {
+    buffer[length] = '\0';
+    if (length > 0) {
+      handleStateLine(String(buffer), source);
+    }
+    length = 0;
+    return;
+  }
+
+  if (length < (STM32_BUFFER_SIZE - 1)) {
+    buffer[length++] = ch;
+  } else {
+    length = 0;
+  }
+}
+
+void readStm32Serial() {
+#if STM32_USE_HW_UART
+  while (Serial.available() > 0) {
+    char ch = static_cast<char>(Serial.read());
+    processStm32Byte(ch, stm32BufferHw, stm32LengthHw, Stm32Link::HW_UART);
+  }
+#endif
+
+#if STM32_USE_SW_UART
+  while (stm32SwSerial.available() > 0) {
+    char ch = static_cast<char>(stm32SwSerial.read());
+    processStm32Byte(ch, stm32BufferSw, stm32LengthSw, Stm32Link::SW_UART);
+  }
+#endif
 }
 
 String parseActionPayload(const uint8_t *payload, unsigned int length) {
@@ -261,20 +398,12 @@ String parseActionPayload(const uint8_t *payload, unsigned int length) {
 }
 
 bool normalizeAction(String &action) {
-  if (action == "ON" || action == "OFF" || action == "TOGGLE") {
-    return true;
-  }
-  return false;
+  return action == "ON" || action == "OFF" || action == "TOGGLE";
 }
 
 void onMqttMessage(char *topic, uint8_t *payload, unsigned int length) {
   String topicText = topic;
   String action = parseActionPayload(payload, length);
-
-  Serial.print("MQTT <= ");
-  Serial.print(topicText);
-  Serial.print(" : ");
-  Serial.println(action);
 
   if (topicText == topicCmdQuery) {
     sendQueryToStm32();
@@ -300,38 +429,45 @@ void onMqttMessage(char *topic, uint8_t *payload, unsigned int length) {
   }
 }
 
-bool connectMqtt() {
-  if (mqttClient.connected()) {
-    mqttOnline = true;
-    return true;
-  }
-
+bool connectMqttOnHost(const char *host) {
+  mqttClient.setServer(host, MQTT_PORT);
   String clientId = "XiaoHeiESP-" + String(ESP.getChipId(), HEX);
-  bool ok = mqttClient.connect(
-      clientId.c_str(),
-      topicAvailability.c_str(),
-      1,
-      true,
-      "offline");
-
+  bool ok = mqttClient.connect(clientId.c_str(), topicAvailability.c_str(), 1, true, "offline");
   if (!ok) {
-    mqttOnline = false;
-    Serial.print("MQTT connect failed, rc=");
-    Serial.println(mqttClient.state());
     return false;
   }
 
   mqttClient.subscribe(topicCmdWildcard.c_str(), 1);
   mqttClient.publish(topicAvailability.c_str(), "online", true);
+  mqttConnectedHost = host;
   mqttOnline = true;
   publishStateToCloud();
   sendQueryToStm32();
   return true;
 }
 
+bool connectMqtt() {
+  if (mqttClient.connected()) {
+    mqttOnline = true;
+    return true;
+  }
+
+  mqttOnline = false;
+  if (connectMqttOnHost(MQTT_HOST)) {
+    return true;
+  }
+
+  if (strcmp(MQTT_HOST, MQTT_HOST_BACKUP) != 0 && connectMqttOnHost(MQTT_HOST_BACKUP)) {
+    return true;
+  }
+
+  return false;
+}
+
 void ensureMqttConnection() {
   if (WiFi.status() != WL_CONNECTED) {
     mqttOnline = false;
+    mqttConnectedHost = "";
     return;
   }
 
@@ -349,10 +485,15 @@ void ensureMqttConnection() {
   connectMqtt();
 }
 
-void handleApiState() {
-  String payload = buildStateJson();
+void sendJson(int statusCode, const String &payload) {
   httpServer.sendHeader("Access-Control-Allow-Origin", "*");
-  httpServer.send(200, "application/json; charset=utf-8", payload);
+  httpServer.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  httpServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  httpServer.send(statusCode, "application/json; charset=utf-8", payload);
+}
+
+void handleApiState() {
+  sendJson(200, buildStateJson());
 }
 
 void handleApiControl() {
@@ -365,18 +506,18 @@ void handleApiControl() {
   action.toUpperCase();
 
   if (target.length() == 0) {
-    httpServer.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"target required\"}");
+    sendJson(400, "{\"ok\":false,\"error\":\"target required\"}");
     return;
   }
 
   if (target == "QUERY") {
     sendQueryToStm32();
-    httpServer.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"query sent\"}");
+    sendJson(200, "{\"ok\":true,\"message\":\"query sent\"}");
     return;
   }
 
   if (!normalizeAction(action)) {
-    httpServer.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"action must be ON/OFF/TOGGLE\"}");
+    sendJson(400, "{\"ok\":false,\"error\":\"action must be ON/OFF/TOGGLE\"}");
     return;
   }
 
@@ -387,20 +528,16 @@ void handleApiControl() {
   } else if (target == "MASTER" || target == "ALL") {
     sendToStm32("CMD,MASTER," + action);
   } else {
-    httpServer.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"target must be LIGHT/PUMP/MASTER/QUERY\"}");
+    sendJson(400, "{\"ok\":false,\"error\":\"target must be LIGHT/PUMP/MASTER/QUERY\"}");
     return;
   }
 
   String payload = String("{\"ok\":true,\"target\":\"") + target + "\",\"action\":\"" + action + "\"}";
-  httpServer.sendHeader("Access-Control-Allow-Origin", "*");
-  httpServer.send(200, "application/json; charset=utf-8", payload);
+  sendJson(200, payload);
 }
 
 void handleApiOptions() {
-  httpServer.sendHeader("Access-Control-Allow-Origin", "*");
-  httpServer.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  httpServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-  httpServer.send(204);
+  sendJson(204, "");
 }
 
 void setupHttpServer() {
@@ -434,8 +571,7 @@ bool connectHomeWifiFirst() {
 
   WiFi.begin(HOME_WIFI_SSID, HOME_WIFI_PASSWORD);
   unsigned long startMs = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         (millis() - startMs) < HOME_WIFI_CONNECT_TIMEOUT_MS) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < HOME_WIFI_CONNECT_TIMEOUT_MS) {
     delay(300);
   }
   return WiFi.status() == WL_CONNECTED;
@@ -447,8 +583,13 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   setStatusLed(false);
 
-  Serial.begin(SERIAL_BAUD);
-  stm32Serial.begin(STM32_UART_BAUD);
+#if STM32_USE_HW_UART
+  Serial.begin(STM32_UART_BAUD);
+#endif
+
+#if STM32_USE_SW_UART
+  stm32SwSerial.begin(STM32_UART_BAUD);
+#endif
 
   topicState = String(MQTT_TOPIC_ROOT) + "/state";
   topicAvailability = String(MQTT_TOPIC_ROOT) + "/availability";
@@ -468,7 +609,7 @@ void setup() {
   wifiManager.setConfigPortalTimeout(180);
   wifiManager.setConfigPortalBlocking(true);
   if (!homeWifiOk) {
-    bool wifiOk = wifiManager.autoConnect(LOCAL_AP_SSID, AP_PASSWORD);
+    bool wifiOk = wifiManager.autoConnect(AP_SSID, AP_PASSWORD);
     if (!wifiOk) {
       delay(1000);
       ESP.restart();
@@ -489,6 +630,7 @@ void loop() {
     ensureStateSync();
   } else {
     mqttOnline = false;
+    mqttConnectedHost = "";
   }
 
   updateLed();

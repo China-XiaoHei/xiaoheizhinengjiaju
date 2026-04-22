@@ -407,7 +407,7 @@ public class MainActivity extends AppCompatActivity {
         tvModeStatus.setText(modeText);
 
         String cloudText = brokerConnected
-            ? "云端已连接 (" + CloudMqttClient.DEFAULT_HOST + ":" + cloudClient.getActiveTransportPort() + ")"
+            ? "云端已连接 (" + cloudClient.getActiveTransportHost() + ":" + cloudClient.getActiveTransportPort() + ")"
             : "云端未连接";
         tvCloudStatus.setText(cloudText);
 

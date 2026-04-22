@@ -25,7 +25,8 @@ public final class CloudMqttClient {
     }
 
     public static final String DEVICE_NAME = "鱼缸照明";
-    public static final String DEFAULT_HOST = "broker.emqx.io";
+    public static final String DEFAULT_HOST = "broker-cn.emqx.io";
+    public static final String DEFAULT_HOST_BACKUP = "broker.emqx.io";
     public static final int DEFAULT_PORT = 1883;
     public static final int DEFAULT_TLS_PORT = 8883;
 
@@ -59,6 +60,7 @@ public final class CloudMqttClient {
     private volatile long lastRxMs = 0L;
     private volatile long lastPingMs = 0L;
     private volatile boolean waitingPingResp = false;
+    private volatile String activeTransportHost = DEFAULT_HOST;
     private volatile int activeTransportPort = DEFAULT_PORT;
     private volatile boolean usingTls = false;
 
@@ -101,6 +103,10 @@ public final class CloudMqttClient {
 
     public int getActiveTransportPort() {
         return activeTransportPort;
+    }
+
+    public String getActiveTransportHost() {
+        return activeTransportHost;
     }
 
     public boolean publishCommand(String target, String action) throws IOException {
@@ -167,6 +173,7 @@ public final class CloudMqttClient {
         socket = nextSocket;
         inputStream = nextSocket.getInputStream();
         outputStream = nextSocket.getOutputStream();
+        activeTransportHost = target.host;
         activeTransportPort = target.port;
         usingTls = target.tls;
         packetId = 1;
@@ -194,10 +201,7 @@ public final class CloudMqttClient {
     private ConnectionTarget connectWithFallback() throws IOException {
         IOException lastError = null;
 
-        ConnectionTarget[] targets = new ConnectionTarget[]{
-            new ConnectionTarget(DEFAULT_HOST, DEFAULT_PORT, false),
-            new ConnectionTarget(DEFAULT_HOST, DEFAULT_TLS_PORT, true)
-        };
+        ConnectionTarget[] targets = buildConnectionTargets();
 
         for (ConnectionTarget target : targets) {
             try {
@@ -215,6 +219,21 @@ public final class CloudMqttClient {
             throw lastError;
         }
         throw new IOException("broker connect failed");
+    }
+
+    private ConnectionTarget[] buildConnectionTargets() {
+        if (DEFAULT_HOST.equalsIgnoreCase(DEFAULT_HOST_BACKUP)) {
+            return new ConnectionTarget[]{
+                new ConnectionTarget(DEFAULT_HOST, DEFAULT_PORT, false),
+                new ConnectionTarget(DEFAULT_HOST, DEFAULT_TLS_PORT, true)
+            };
+        }
+        return new ConnectionTarget[]{
+            new ConnectionTarget(DEFAULT_HOST, DEFAULT_PORT, false),
+            new ConnectionTarget(DEFAULT_HOST, DEFAULT_TLS_PORT, true),
+            new ConnectionTarget(DEFAULT_HOST_BACKUP, DEFAULT_PORT, false),
+            new ConnectionTarget(DEFAULT_HOST_BACKUP, DEFAULT_TLS_PORT, true)
+        };
     }
 
     private void readLoop(int workerGeneration) throws IOException {
