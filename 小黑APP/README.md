@@ -1,25 +1,27 @@
 # 小黑APP
 
-这个目录现在包含两部分内容：
+安卓控制端在 `FishLightApp` 目录。
 
-- `FishLightApp`：安卓源码工程
-- `output/小黑APP-鱼缸照明-v2.0.0-release.apk`：已经打好的安装包
+## 功能
 
-## APP 功能
+- 设备名固定显示：`鱼缸照明`
+- 显示状态：
+  - 鱼缸照明开/关
+  - 鱼泵开/关
+  - 总开关状态
+  - 设备总状态
+  - 最后来源
+- 两种控制模式：
+  - 云端 MQTT
+  - ESP 本地 HTTP
 
-- 设备名称固定为 `鱼缸照明`
-- 只保留一个主控按钮
-- 通过 MQTT 远程网络控制
-- 本地物理按钮状态会自动同步回 APP
-- APP 根据最新状态自动显示应该点击 `开灯` 还是 `关灯`
+## 打包
 
-## 构建方式
+```powershell
+cd E:\ST工程\小黑家居\小黑APP\FishLightApp
+.\gradlew.bat clean assembleRelease
+```
 
-本机已经验证可用的构建方式：
+打包后 APK 会复制到：
 
-- 直接使用 `E:\android-toolchain\gradle\gradle-8.7\bin\gradle.bat`
-- 工程内也已经补了 `gradle wrapper`
-
-源码主入口：
-
-- [FishLightApp/app/src/main/java/com/xiaohei/fishlight/MainActivity.java](/E:/ST工程/小黑家居/小黑APP/FishLightApp/app/src/main/java/com/xiaohei/fishlight/MainActivity.java)
+- `E:\ST工程\小黑家居\小黑APP\output\小黑APP-鱼缸控制-v3.0.0-release.apk`

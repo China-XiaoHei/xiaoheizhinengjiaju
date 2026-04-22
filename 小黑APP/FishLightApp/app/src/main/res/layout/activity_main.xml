@@ -2,198 +2,157 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_screen"
     android:fillViewport="true"
-    android:padding="18dp">
+    android:padding="16dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <LinearLayout
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="小黑家居 · 鱼缸控制"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="设备名：鱼缸照明"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvTopicRoot"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_panel"
-            android:orientation="vertical"
-            android:padding="18dp">
+            android:layout_marginTop="4dp"
+            android:textSize="12sp" />
 
-            <TextView
+        <TextView
+            android:id="@+id/tvModeStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/rgMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/rbCloud"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="小黑APP"
-                android:textColor="#112847"
-                android:textSize="26sp"
-                android:textStyle="bold" />
+                android:text="云端 MQTT" />
 
-            <TextView
+            <RadioButton
+                android:id="@+id/rbLocal"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="鱼缸照明远程控制"
-                android:textColor="#48607D"
-                android:textSize="14sp" />
+                android:layout_marginStart="16dp"
+                android:text="ESP 本地网络" />
+        </RadioGroup>
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="一个按钮远程开关灯，本地物理按钮变化也会自动回传到 APP。"
-                android:textColor="#5B6F8A"
-                android:textSize="13sp" />
-        </LinearLayout>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="ESP 地址（本地模式用）" />
 
-        <LinearLayout
+        <EditText
+            android:id="@+id/etLocalUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="http://192.168.1.100"
+            android:inputType="textUri"
+            android:singleLine="true" />
+
+        <Button
+            android:id="@+id/btnRefresh"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="刷新状态" />
+
+        <TextView
+            android:id="@+id/tvCloudStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:background="@drawable/bg_panel"
-            android:orientation="vertical"
-            android:padding="18dp">
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="设备名称"
-                android:textColor="#6D8097"
-                android:textSize="12sp" />
+        <TextView
+            android:id="@+id/tvDeviceStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="鱼缸照明"
-                android:textColor="#16365A"
-                android:textSize="24sp"
-                android:textStyle="bold" />
+        <TextView
+            android:id="@+id/tvLightStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="MQTT 主题根"
-                android:textColor="#6D8097"
-                android:textSize="12sp" />
+        <TextView
+            android:id="@+id/tvPumpStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
 
-            <TextView
-                android:id="@+id/tvTopicRoot"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="#16365A"
-                android:textSize="14sp" />
+        <TextView
+            android:id="@+id/tvMasterStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:orientation="horizontal">
+        <TextView
+            android:id="@+id/tvOverallStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/tvCloudBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/bg_status_waiting"
-                    android:paddingStart="12dp"
-                    android:paddingTop="7dp"
-                    android:paddingEnd="12dp"
-                    android:paddingBottom="7dp"
-                    android:text="云端连接中"
-                    android:textColor="#FFFFFF"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvDeviceBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:background="@drawable/bg_status_offline"
-                    android:paddingStart="12dp"
-                    android:paddingTop="7dp"
-                    android:paddingEnd="12dp"
-                    android:paddingBottom="7dp"
-                    android:text="设备离线"
-                    android:textColor="#FFFFFF"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/tvPowerBadge"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_status_waiting"
-                android:paddingStart="12dp"
-                android:paddingTop="7dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="7dp"
-                android:text="等待状态同步"
-                android:textColor="#FFFFFF"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/tvStatusDetail"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:lineSpacingExtra="4dp"
-                android:textColor="#355170"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvLastSource"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:textColor="#355170"
-                android:textSize="14sp" />
-        </LinearLayout>
+        <TextView
+            android:id="@+id/tvSource"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
 
         <Button
-            android:id="@+id/btnToggle"
+            android:id="@+id/btnLight"
             android:layout_width="match_parent"
-            android:layout_height="60dp"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/bg_action_button"
-            android:text="等待同步"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="打开照明" />
+
+        <Button
+            android:id="@+id/btnPump"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="打开鱼泵" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="本地按键点一次开、再点一次关。只要设备在线，APP 会自动同步到最新状态。"
-            android:textColor="#5B6F8A"
-            android:textSize="13sp" />
+            android:layout_marginTop="14dp"
+            android:text="运行日志"
+            android:textStyle="bold" />
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/tvLog"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/bg_log_panel"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="运行日志"
-                android:textColor="#EAF2FF"
-                android:textSize="16sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/tvLog"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:lineSpacingExtra="3dp"
-                android:text="等待日志..."
-                android:textColor="#EAF2FF"
-                android:textSize="13sp" />
-        </LinearLayout>
+            android:layout_marginTop="6dp"
+            android:padding="8dp"
+            android:background="#EEEEEE"
+            android:text="等待日志..." />
     </LinearLayout>
 </ScrollView>

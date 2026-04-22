@@ -28,10 +28,14 @@ public final class CloudMqttClient {
     public static final String DEFAULT_HOST = "broker.emqx.io";
     public static final int DEFAULT_PORT = 1883;
     public static final int DEFAULT_TLS_PORT = 8883;
-    public static final String TOPIC_ROOT = "xiaohei/fishlight/khome-20260419-a7c2";
-    public static final String TOPIC_COMMAND = TOPIC_ROOT + "/command";
+
+    public static final String TOPIC_ROOT = "xiaohei/aquarium/khome-20260422";
     public static final String TOPIC_STATE = TOPIC_ROOT + "/state";
     public static final String TOPIC_AVAILABILITY = TOPIC_ROOT + "/availability";
+    public static final String TOPIC_CMD_LIGHT = TOPIC_ROOT + "/cmd/light";
+    public static final String TOPIC_CMD_PUMP = TOPIC_ROOT + "/cmd/pump";
+    public static final String TOPIC_CMD_MASTER = TOPIC_ROOT + "/cmd/master";
+    public static final String TOPIC_CMD_QUERY = TOPIC_ROOT + "/cmd/query";
 
     private static final int CONNECT_TIMEOUT_MS = 3500;
     private static final int SOCKET_TIMEOUT_MS = 1000;
@@ -72,7 +76,7 @@ public final class CloudMqttClient {
         closeSocketQuietly();
 
         final int workerGeneration = generation;
-        workerThread = new Thread(() -> runLoop(workerGeneration), "xiaohei-fishlight-mqtt");
+        workerThread = new Thread(() -> runLoop(workerGeneration), "xiaohei-aquarium-mqtt");
         workerThread.start();
     }
 
@@ -99,11 +103,29 @@ public final class CloudMqttClient {
         return activeTransportPort;
     }
 
-    public boolean publishCommand(String command) throws IOException {
-        if (command == null || command.trim().isEmpty()) {
+    public boolean publishCommand(String target, String action) throws IOException {
+        if (target == null || action == null) {
             return false;
         }
-        return sendPublish(TOPIC_COMMAND, command.trim(), false);
+
+        String topic;
+        String cleanTarget = target.trim().toUpperCase(Locale.ROOT);
+        String cleanAction = action.trim().toUpperCase(Locale.ROOT);
+
+        if ("QUERY".equals(cleanTarget)) {
+            topic = TOPIC_CMD_QUERY;
+            cleanAction = "QUERY";
+        } else if ("LIGHT".equals(cleanTarget)) {
+            topic = TOPIC_CMD_LIGHT;
+        } else if ("PUMP".equals(cleanTarget)) {
+            topic = TOPIC_CMD_PUMP;
+        } else if ("MASTER".equals(cleanTarget) || "ALL".equals(cleanTarget)) {
+            topic = TOPIC_CMD_MASTER;
+        } else {
+            return false;
+        }
+
+        return sendPublish(topic, cleanAction, false);
     }
 
     private boolean isWorkerActive(int workerGeneration) {
@@ -335,13 +357,19 @@ public final class CloudMqttClient {
 
     private byte[] buildConnectPacket(String clientId) {
         byte[] payload = encodeString(clientId);
-        byte[] variableHeader = new byte[]{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02,
-            (byte) ((KEEP_ALIVE_SEC >> 8) & 0xFF), (byte) (KEEP_ALIVE_SEC & 0xFF)};
+        byte[] variableHeader = new byte[]{
+            0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02,
+            (byte) ((KEEP_ALIVE_SEC >> 8) & 0xFF),
+            (byte) (KEEP_ALIVE_SEC & 0xFF)
+        };
         return buildPacket((byte) 0x10, variableHeader, payload);
     }
 
     private byte[] buildSubscribePacket(String[] topics) {
-        byte[] variableHeader = new byte[]{(byte) ((packetId >> 8) & 0xFF), (byte) (packetId & 0xFF)};
+        byte[] variableHeader = new byte[]{
+            (byte) ((packetId >> 8) & 0xFF),
+            (byte) (packetId & 0xFF)
+        };
         packetId++;
 
         int payloadLength = 0;
@@ -440,7 +468,7 @@ public final class CloudMqttClient {
 
     private String buildClientId() {
         long suffix = System.currentTimeMillis() & 0xFFFFFFL;
-        return String.format(Locale.US, "xiaohei_fishlight_%06X", suffix);
+        return String.format(Locale.US, "xiaohei_aquarium_%06X", suffix);
     }
 
     private void notifyConnected() {

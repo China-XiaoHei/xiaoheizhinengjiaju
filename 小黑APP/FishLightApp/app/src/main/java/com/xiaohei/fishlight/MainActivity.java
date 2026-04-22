@@ -6,6 +6,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -13,65 +16,82 @@ import androidx.appcompat.app.AppCompatActivity;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String PREFS_NAME = "fishlight_state";
-    private static final String KEY_POWER_KNOWN = "power_known";
-    private static final String KEY_POWER_ON = "power_on";
-    private static final String KEY_LAST_SOURCE = "last_source";
-    private static final long COMMAND_TIMEOUT_MS = 4000L;
+    private static final String PREFS = "xiaohei_aquarium_app";
+    private static final String KEY_MODE = "mode";
+    private static final String KEY_LOCAL_URL = "local_url";
+    private static final String MODE_CLOUD = "CLOUD";
+    private static final String MODE_LOCAL = "LOCAL";
     private static final int MAX_LOG_LINES = 14;
+    private static final long LOCAL_POLL_MS = 3500L;
+    private static final int HTTP_TIMEOUT_MS = 3500;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private final ArrayDeque<String> logs = new ArrayDeque<>();
-    private final Runnable commandTimeoutRunnable = () -> {
-        commandPending = false;
-        appendLog("等待设备回传状态超时，请检查设备是否在线。");
-        refreshUi();
+
+    private final Runnable localPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isLocalMode()) {
+                fetchLocalStateAsync(false);
+            }
+            uiHandler.postDelayed(this, LOCAL_POLL_MS);
+        }
     };
 
-    private TextView tvCloudBadge;
-    private TextView tvDeviceBadge;
-    private TextView tvPowerBadge;
-    private TextView tvStatusDetail;
-    private TextView tvLastSource;
-    private TextView tvLog;
+    private TextView tvModeStatus;
+    private TextView tvCloudStatus;
+    private TextView tvDeviceStatus;
+    private TextView tvLightStatus;
+    private TextView tvPumpStatus;
+    private TextView tvMasterStatus;
+    private TextView tvOverallStatus;
+    private TextView tvSource;
     private TextView tvTopicRoot;
-    private Button btnToggle;
+    private TextView tvLog;
+    private EditText etLocalUrl;
+    private RadioGroup rgMode;
+    private RadioButton rbCloud;
+    private RadioButton rbLocal;
+    private Button btnRefresh;
+    private Button btnLight;
+    private Button btnPump;
 
     private CloudMqttClient cloudClient;
     private boolean brokerConnected = false;
-    private boolean deviceOnline = false;
-    private boolean powerKnown = false;
-    private boolean powerOn = false;
-    private boolean commandPending = false;
-    private String lastSource = "sync";
+    private boolean cloudDeviceOnline = false;
+    private boolean localReachable = false;
+
+    private final DeviceState state = new DeviceState();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        tvCloudBadge = findViewById(R.id.tvCloudBadge);
-        tvDeviceBadge = findViewById(R.id.tvDeviceBadge);
-        tvPowerBadge = findViewById(R.id.tvPowerBadge);
-        tvStatusDetail = findViewById(R.id.tvStatusDetail);
-        tvLastSource = findViewById(R.id.tvLastSource);
-        tvLog = findViewById(R.id.tvLog);
-        tvTopicRoot = findViewById(R.id.tvTopicRoot);
-        btnToggle = findViewById(R.id.btnToggle);
+        bindViews();
+        loadPrefs();
+        setupCloudClient();
+        setupActions();
 
         tvTopicRoot.setText(CloudMqttClient.TOPIC_ROOT);
-        loadCachedState();
-        setupCloudClient();
-
-        btnToggle.setOnClickListener(v -> sendToggleCommand());
-        appendLog("APP 已启动，准备连接云端。");
+        appendLog("APP 已启动，等待设备状态同步。");
         refreshUi();
     }
 
@@ -79,25 +99,45 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         cloudClient.start();
+        uiHandler.removeCallbacks(localPollRunnable);
+        uiHandler.post(localPollRunnable);
+        queryByCurrentMode();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        uiHandler.removeCallbacks(commandTimeoutRunnable);
-        commandPending = false;
-        if (cloudClient != null) {
-            cloudClient.stop();
-        }
+        uiHandler.removeCallbacks(localPollRunnable);
+        cloudClient.stop();
+        savePrefs();
     }
 
     @Override
     protected void onDestroy() {
+        cloudClient.stop();
         uiHandler.removeCallbacksAndMessages(null);
-        if (cloudClient != null) {
-            cloudClient.stop();
-        }
+        networkExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    private void bindViews() {
+        tvModeStatus = findViewById(R.id.tvModeStatus);
+        tvCloudStatus = findViewById(R.id.tvCloudStatus);
+        tvDeviceStatus = findViewById(R.id.tvDeviceStatus);
+        tvLightStatus = findViewById(R.id.tvLightStatus);
+        tvPumpStatus = findViewById(R.id.tvPumpStatus);
+        tvMasterStatus = findViewById(R.id.tvMasterStatus);
+        tvOverallStatus = findViewById(R.id.tvOverallStatus);
+        tvSource = findViewById(R.id.tvSource);
+        tvTopicRoot = findViewById(R.id.tvTopicRoot);
+        tvLog = findViewById(R.id.tvLog);
+        etLocalUrl = findViewById(R.id.etLocalUrl);
+        rgMode = findViewById(R.id.rgMode);
+        rbCloud = findViewById(R.id.rbCloud);
+        rbLocal = findViewById(R.id.rbLocal);
+        btnRefresh = findViewById(R.id.btnRefresh);
+        btnLight = findViewById(R.id.btnLight);
+        btnPump = findViewById(R.id.btnPump);
     }
 
     private void setupCloudClient() {
@@ -105,221 +145,298 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onConnected() {
                 brokerConnected = true;
-                appendLog("云端 Broker 已连接，正在查询最新灯状态。");
+                appendLog("云端 Broker 已连接。");
                 refreshUi();
-                requestLatestState();
+                if (!isLocalMode()) {
+                    queryCloudState();
+                }
             }
 
             @Override
             public void onDisconnected(String reason) {
-                boolean wasOnline = brokerConnected || deviceOnline;
                 brokerConnected = false;
-                deviceOnline = false;
-                commandPending = false;
-                uiHandler.removeCallbacks(commandTimeoutRunnable);
-                if (wasOnline) {
-                    appendLog("云端连接断开：" + reason);
-                }
+                cloudDeviceOnline = false;
+                appendLog("云端连接断开: " + reason);
                 refreshUi();
             }
 
             @Override
             public void onStateMessage(String payload) {
-                applyStatePayload(payload);
+                try {
+                    JSONObject object = new JSONObject(payload);
+                    applyStateFromJson(object, "cloud");
+                } catch (JSONException e) {
+                    appendLog("云端状态解析失败: " + e.getMessage());
+                }
             }
 
             @Override
             public void onAvailabilityMessage(String payload) {
-                applyAvailabilityPayload(payload);
+                String normalized = payload == null ? "" : payload.trim().toLowerCase(Locale.ROOT);
+                cloudDeviceOnline = "online".equals(normalized);
+                refreshUi();
             }
         });
     }
 
-    private void requestLatestState() {
-        try {
-            if (cloudClient.publishCommand("QUERY")) {
-                appendLog("已向设备请求最新状态。");
-            }
-        } catch (Exception e) {
-            appendLog("请求状态失败：" + safeMessage(e));
-        }
+    private void setupActions() {
+        rgMode.setOnCheckedChangeListener((group, checkedId) -> {
+            refreshUi();
+            savePrefs();
+            queryByCurrentMode();
+        });
+
+        btnRefresh.setOnClickListener(v -> queryByCurrentMode());
+
+        btnLight.setOnClickListener(v -> {
+            String action = state.known ? (state.light ? "OFF" : "ON") : "TOGGLE";
+            sendCommand("LIGHT", action);
+        });
+
+        btnPump.setOnClickListener(v -> {
+            String action = state.known ? (state.pump ? "OFF" : "ON") : "TOGGLE";
+            sendCommand("PUMP", action);
+        });
     }
 
-    private void sendToggleCommand() {
-        if (!brokerConnected || !deviceOnline || !powerKnown || commandPending) {
-            return;
-        }
-
-        String command = powerOn ? "OFF" : "ON";
-        String actionText = powerOn ? "关灯" : "开灯";
-        try {
-            if (!cloudClient.publishCommand(command)) {
-                appendLog("命令发送失败，云端暂未连通。");
-                refreshUi();
-                return;
-            }
-            commandPending = true;
-            uiHandler.removeCallbacks(commandTimeoutRunnable);
-            uiHandler.postDelayed(commandTimeoutRunnable, COMMAND_TIMEOUT_MS);
-            appendLog("已发送指令：" + actionText);
-            refreshUi();
-        } catch (Exception e) {
-            appendLog("命令发送失败：" + safeMessage(e));
-            refreshUi();
-        }
-    }
-
-    private void applyAvailabilityPayload(String payload) {
-        String normalized = payload == null ? "" : payload.trim().toLowerCase(Locale.ROOT);
-        boolean nextOnline = "online".equals(normalized);
-        if (deviceOnline != nextOnline) {
-            deviceOnline = nextOnline;
-            if (nextOnline) {
-                appendLog("设备已上线，可以远程控制鱼缸照明。");
-                requestLatestState();
-            } else {
-                appendLog("设备已离线，等待重新上线。");
-            }
+    private void queryByCurrentMode() {
+        if (isLocalMode()) {
+            fetchLocalStateAsync(true);
         } else {
-            deviceOnline = nextOnline;
+            queryCloudState();
         }
-        refreshUi();
     }
 
-    private void applyStatePayload(String payload) {
-        boolean previousKnown = powerKnown;
-        boolean previousPower = powerOn;
-        String previousSource = lastSource;
+    private void queryCloudState() {
+        networkExecutor.execute(() -> {
+            try {
+                boolean ok = cloudClient.publishCommand("QUERY", "QUERY");
+                uiHandler.post(() -> {
+                    if (ok) {
+                        appendLog("已请求云端刷新状态。");
+                    } else {
+                        appendLog("云端未连接，无法请求状态。");
+                    }
+                    refreshUi();
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> appendLog("云端请求失败: " + safeMessage(e)));
+            }
+        });
+    }
 
-        if (!parseStatePayload(payload)) {
-            appendLog("收到无法识别的状态消息：" + payload);
+    private void sendCommand(String target, String action) {
+        if (isLocalMode()) {
+            sendLocalCommandAsync(target, action);
+        } else {
+            sendCloudCommandAsync(target, action);
+        }
+    }
+
+    private void sendCloudCommandAsync(String target, String action) {
+        networkExecutor.execute(() -> {
+            try {
+                boolean ok = cloudClient.publishCommand(target, action);
+                uiHandler.post(() -> {
+                    if (ok) {
+                        appendLog("云端指令已发送: " + target + " -> " + action);
+                    } else {
+                        appendLog("云端未连接，指令未发送。");
+                    }
+                    refreshUi();
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> appendLog("云端发送失败: " + safeMessage(e)));
+            }
+        });
+    }
+
+    private void sendLocalCommandAsync(String target, String action) {
+        final String baseUrl = getLocalBaseUrl();
+        if (TextUtils.isEmpty(baseUrl)) {
+            appendLog("本地地址为空，请输入 ESP 地址。");
             return;
         }
 
-        brokerConnected = true;
-        deviceOnline = true;
-        commandPending = false;
-        uiHandler.removeCallbacks(commandTimeoutRunnable);
-        saveCachedState();
+        networkExecutor.execute(() -> {
+            try {
+                String url = baseUrl + "/api/control?target="
+                    + URLEncoder.encode(target, StandardCharsets.UTF_8.name())
+                    + "&action="
+                    + URLEncoder.encode(action, StandardCharsets.UTF_8.name());
+                HttpResult result = httpGet(url);
+                uiHandler.post(() -> {
+                    if (result.ok) {
+                        localReachable = true;
+                        appendLog("本地下发成功: " + target + " -> " + action);
+                        refreshUi();
+                        uiHandler.postDelayed(() -> fetchLocalStateAsync(false), 500);
+                    } else {
+                        localReachable = false;
+                        appendLog("本地下发失败: " + result.error);
+                        refreshUi();
+                    }
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> {
+                    localReachable = false;
+                    appendLog("本地下发异常: " + safeMessage(e));
+                    refreshUi();
+                });
+            }
+        });
+    }
 
-        boolean changed = !previousKnown || previousPower != powerOn || !TextUtils.equals(previousSource, lastSource);
-        if (changed) {
-            appendLog("状态同步：" + CloudMqttClient.DEVICE_NAME + (powerOn ? "已开启" : "已关闭")
-                + "，来源：" + sourceToChinese(lastSource) + "。");
+    private void fetchLocalStateAsync(boolean logWhenSuccess) {
+        final String baseUrl = getLocalBaseUrl();
+        if (TextUtils.isEmpty(baseUrl)) {
+            if (logWhenSuccess) {
+                appendLog("请先填写本地 ESP 地址。");
+            }
+            localReachable = false;
+            refreshUi();
+            return;
         }
+
+        networkExecutor.execute(() -> {
+            try {
+                HttpResult result = httpGet(baseUrl + "/api/state");
+                if (!result.ok) {
+                    throw new RuntimeException(result.error);
+                }
+                JSONObject object = new JSONObject(result.body);
+                uiHandler.post(() -> {
+                    localReachable = true;
+                    applyStateFromJson(object, "local");
+                    if (logWhenSuccess) {
+                        appendLog("本地状态已同步。");
+                    }
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> {
+                    localReachable = false;
+                    if (logWhenSuccess) {
+                        appendLog("本地状态获取失败: " + safeMessage(e));
+                    }
+                    refreshUi();
+                });
+            }
+        });
+    }
+
+    private void applyStateFromJson(JSONObject object, String channel) {
+        state.known = object.optBoolean("known", true);
+        state.light = object.optBoolean("light", false);
+        state.pump = object.optBoolean("pump", false);
+        state.masterSwitch = object.optBoolean("masterSwitch", false);
+        state.overall = object.optBoolean("overall", state.light || state.pump);
+        state.source = object.optString("source", "UNKNOWN");
+
+        if (!"local".equals(channel)) {
+            cloudDeviceOnline = true;
+        }
+
+        savePrefs();
         refreshUi();
     }
 
-    private boolean parseStatePayload(String payload) {
-        if (TextUtils.isEmpty(payload)) {
-            return false;
-        }
+    private HttpResult httpGet(String urlText) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(urlText);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(HTTP_TIMEOUT_MS);
+            connection.setReadTimeout(HTTP_TIMEOUT_MS);
+            connection.connect();
 
-        String trimmed = payload.trim();
-        if (trimmed.startsWith("{")) {
-            try {
-                JSONObject object = new JSONObject(trimmed);
-                if (!object.has("power")) {
-                    return false;
-                }
-                powerOn = object.optBoolean("power", false);
-                powerKnown = true;
-                lastSource = object.optString("source", "sync");
-                return true;
-            } catch (JSONException e) {
-                return false;
+            int code = connection.getResponseCode();
+            InputStream stream = code >= 200 && code < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+            String body = readAll(stream);
+            if (code >= 200 && code < 300) {
+                return HttpResult.success(body);
+            }
+            return HttpResult.error("HTTP " + code + " " + body);
+        } catch (Exception e) {
+            return HttpResult.error(safeMessage(e));
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
             }
         }
+    }
 
-        String normalized = trimmed.toUpperCase(Locale.ROOT);
-        if ("ON".equals(normalized)) {
-            powerOn = true;
-            powerKnown = true;
-            lastSource = "sync";
-            return true;
+    private String readAll(InputStream stream) {
+        if (stream == null) {
+            return "";
         }
-        if ("OFF".equals(normalized)) {
-            powerOn = false;
-            powerKnown = true;
-            lastSource = "sync";
-            return true;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            StringBuilder builder = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                builder.append(line);
+            }
+            return builder.toString();
+        } catch (Exception e) {
+            return "";
         }
-        return false;
+    }
+
+    private boolean isLocalMode() {
+        return rgMode.getCheckedRadioButtonId() == R.id.rbLocal;
+    }
+
+    private String getLocalBaseUrl() {
+        String raw = etLocalUrl.getText() == null ? "" : etLocalUrl.getText().toString().trim();
+        if (raw.isEmpty()) {
+            return "";
+        }
+        if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+            raw = "http://" + raw;
+        }
+        while (raw.endsWith("/")) {
+            raw = raw.substring(0, raw.length() - 1);
+        }
+        return raw;
     }
 
     private void refreshUi() {
-        tvCloudBadge.setText(brokerConnected
-            ? (cloudClient.isUsingTls() ? "云端已连接 TLS" : "云端已连接")
-            : "云端连接中");
-        tvCloudBadge.setBackgroundResource(brokerConnected ? R.drawable.bg_status_online : R.drawable.bg_status_waiting);
+        String modeText = isLocalMode() ? "当前模式: ESP 本地网络" : "当前模式: 云端 MQTT";
+        tvModeStatus.setText(modeText);
 
-        tvDeviceBadge.setText(deviceOnline ? "设备在线" : "设备离线");
-        tvDeviceBadge.setBackgroundResource(deviceOnline ? R.drawable.bg_status_online : R.drawable.bg_status_offline);
+        String cloudText = brokerConnected
+            ? "云端已连接 (" + CloudMqttClient.DEFAULT_HOST + ":" + cloudClient.getActiveTransportPort() + ")"
+            : "云端未连接";
+        tvCloudStatus.setText(cloudText);
 
-        if (powerKnown) {
-            tvPowerBadge.setText(powerOn ? "照明已开启" : "照明已关闭");
-            tvPowerBadge.setBackgroundResource(powerOn ? R.drawable.bg_status_power_on : R.drawable.bg_status_power_off);
+        boolean channelOnline = isLocalMode() ? localReachable : (brokerConnected && cloudDeviceOnline);
+        tvDeviceStatus.setText(channelOnline ? "设备在线" : "设备离线");
+
+        if (!state.known) {
+            tvLightStatus.setText("鱼缸照明: 未知");
+            tvPumpStatus.setText("鱼泵状态: 未知");
+            tvMasterStatus.setText("总开关: 未知");
+            tvOverallStatus.setText("设备总状态: 未知");
+            tvSource.setText("最后来源: 未知");
         } else {
-            tvPowerBadge.setText("等待状态同步");
-            tvPowerBadge.setBackgroundResource(R.drawable.bg_status_waiting);
+            tvLightStatus.setText("鱼缸照明: " + (state.light ? "打开" : "关闭"));
+            tvPumpStatus.setText("鱼泵状态: " + (state.pump ? "打开" : "关闭"));
+            tvMasterStatus.setText("总开关: " + (state.masterSwitch ? "打开" : "关闭"));
+            tvOverallStatus.setText("设备总状态: " + (state.overall ? "运行中" : "已停止"));
+            tvSource.setText("最后来源: " + state.source);
         }
 
-        String brokerText;
-        if (brokerConnected) {
-            String transport = cloudClient.isUsingTls() ? "TLS " + cloudClient.getActiveTransportPort() : String.valueOf(cloudClient.getActiveTransportPort());
-            brokerText = "Broker：" + CloudMqttClient.DEFAULT_HOST + " : " + transport;
-        } else {
-            brokerText = "Broker：正在重连 " + CloudMqttClient.DEFAULT_HOST;
-        }
-
-        String deviceText;
-        if (deviceOnline) {
-            deviceText = "设备在线，本地物理按钮和 APP 会自动保持同步。";
-        } else if (brokerConnected) {
-            deviceText = "Broker 已连接，但设备暂未上线。";
-        } else {
-            deviceText = "正在连接云端，请稍候。";
-        }
-
-        String lampText = powerKnown
-            ? CloudMqttClient.DEVICE_NAME + "当前状态：" + (powerOn ? "开启" : "关闭")
-            : CloudMqttClient.DEVICE_NAME + "当前状态：等待同步";
-        tvStatusDetail.setText(brokerText + "\n" + deviceText + "\n" + lampText);
-        tvLastSource.setText("最后来源：" + sourceToChinese(lastSource));
-
-        boolean canToggle = brokerConnected && deviceOnline && powerKnown && !commandPending;
-        btnToggle.setEnabled(canToggle);
-        btnToggle.setAlpha(canToggle ? 1.0f : 0.55f);
-        if (commandPending) {
-            btnToggle.setText("等待同步...");
-        } else if (!powerKnown) {
-            btnToggle.setText("等待同步");
-        } else {
-            btnToggle.setText(powerOn ? "关灯" : "开灯");
-        }
+        btnLight.setText(state.known && state.light ? "关闭照明" : "打开照明");
+        btnPump.setText(state.known && state.pump ? "关闭鱼泵" : "打开鱼泵");
 
         renderLogs();
     }
 
-    private void loadCachedState() {
-        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        powerKnown = preferences.getBoolean(KEY_POWER_KNOWN, false);
-        powerOn = preferences.getBoolean(KEY_POWER_ON, false);
-        lastSource = preferences.getString(KEY_LAST_SOURCE, "sync");
-    }
-
-    private void saveCachedState() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_POWER_KNOWN, powerKnown)
-            .putBoolean(KEY_POWER_ON, powerOn)
-            .putString(KEY_LAST_SOURCE, lastSource)
-            .apply();
-    }
-
-    private void appendLog(String message) {
+    private void appendLog(String text) {
         String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
-        logs.addLast(time + "  " + message);
+        logs.addLast(time + "  " + text);
         while (logs.size() > MAX_LOG_LINES) {
             logs.removeFirst();
         }
@@ -331,7 +448,6 @@ public class MainActivity extends AppCompatActivity {
             tvLog.setText("等待日志...");
             return;
         }
-
         StringBuilder builder = new StringBuilder();
         for (String line : logs) {
             if (builder.length() > 0) {
@@ -342,26 +458,60 @@ public class MainActivity extends AppCompatActivity {
         tvLog.setText(builder.toString());
     }
 
-    private String sourceToChinese(String source) {
-        if ("button".equalsIgnoreCase(source)) {
-            return "本地按钮";
+    private void loadPrefs() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String mode = prefs.getString(KEY_MODE, MODE_CLOUD);
+        String localUrl = prefs.getString(KEY_LOCAL_URL, "http://192.168.1.100");
+        etLocalUrl.setText(localUrl);
+        if (MODE_LOCAL.equals(mode)) {
+            rbLocal.setChecked(true);
+        } else {
+            rbCloud.setChecked(true);
         }
-        if ("cloud".equalsIgnoreCase(source)) {
-            return "APP / 云端";
-        }
-        if ("boot".equalsIgnoreCase(source)) {
-            return "设备上电";
-        }
-        if ("sync".equalsIgnoreCase(source)) {
-            return "状态同步";
-        }
-        return TextUtils.isEmpty(source) ? "未知" : source;
     }
 
-    private String safeMessage(Exception exception) {
-        if (exception == null || TextUtils.isEmpty(exception.getMessage())) {
+    private void savePrefs() {
+        String mode = isLocalMode() ? MODE_LOCAL : MODE_CLOUD;
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(KEY_MODE, mode)
+            .putString(KEY_LOCAL_URL, getLocalBaseUrl())
+            .apply();
+    }
+
+    private String safeMessage(Exception e) {
+        if (e == null || TextUtils.isEmpty(e.getMessage())) {
             return "未知错误";
         }
-        return exception.getMessage();
+        return e.getMessage();
+    }
+
+    private static final class DeviceState {
+        boolean known = false;
+        boolean light = false;
+        boolean pump = false;
+        boolean masterSwitch = false;
+        boolean overall = false;
+        String source = "UNKNOWN";
+    }
+
+    private static final class HttpResult {
+        final boolean ok;
+        final String body;
+        final String error;
+
+        private HttpResult(boolean ok, String body, String error) {
+            this.ok = ok;
+            this.body = body;
+            this.error = error;
+        }
+
+        static HttpResult success(String body) {
+            return new HttpResult(true, body, "");
+        }
+
+        static HttpResult error(String error) {
+            return new HttpResult(false, "", error);
+        }
     }
 }
