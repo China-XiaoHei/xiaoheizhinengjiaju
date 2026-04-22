@@ -81,6 +81,8 @@ struct DebouncedInput {
 
 DebouncedInput masterSwitchInput{};
 DebouncedInput lightButtonInput{};
+bool masterSwitchPressed = false;
+uint32_t masterSwitchPressStartMs = 0;
 bool lightButtonPressed = false;
 uint32_t lightButtonPressStartMs = 0;
 
@@ -346,13 +348,10 @@ bool updateDebounced(DebouncedInput &input,
   return false;
 }
 
-void applyHardwareMasterSwitch(bool nextStateOn) {
-  if (masterSwitchOn == nextStateOn && lightOn == nextStateOn && pumpOn == nextStateOn) {
-    return;
-  }
-  masterSwitchOn = nextStateOn;
-  lightOn = nextStateOn;
-  pumpOn = nextStateOn;
+void applyMasterSwitchClick() {
+  masterSwitchOn = !masterSwitchOn;
+  lightOn = masterSwitchOn;
+  pumpOn = masterSwitchOn;
   applyOutputs();
   sendState("MASTER_SWITCH", true);
 }
@@ -523,7 +522,7 @@ void setup() {
   lightButtonInput.stable = lightButtonInput.raw;
   lightButtonInput.changedAtMs = nowMs;
 
-  masterSwitchOn = masterSwitchInput.stable;
+  masterSwitchOn = false;
   lightOn = masterSwitchOn;
   pumpOn = masterSwitchOn;
   applyOutputs();
@@ -539,7 +538,16 @@ void loop() {
   uint32_t nowMs = millis();
 
   if (updateDebounced(masterSwitchInput, readInputActive(MASTER_SWITCH_PIN), nowMs, INPUT_DEBOUNCE_MS)) {
-    applyHardwareMasterSwitch(masterSwitchInput.stable);
+    if (masterSwitchInput.stable) {
+      masterSwitchPressed = true;
+      masterSwitchPressStartMs = nowMs;
+    } else if (masterSwitchPressed) {
+      uint32_t pressDurationMs = nowMs - masterSwitchPressStartMs;
+      if (pressDurationMs >= BUTTON_SHORT_PRESS_MIN_MS) {
+        applyMasterSwitchClick();
+      }
+      masterSwitchPressed = false;
+    }
   }
 
   if (updateDebounced(lightButtonInput, readInputActive(LIGHT_BUTTON_PIN), nowMs, INPUT_DEBOUNCE_MS)) {
