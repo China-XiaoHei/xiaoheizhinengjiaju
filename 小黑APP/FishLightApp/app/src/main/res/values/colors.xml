@@ -1,0 +1,28 @@
+<resources>
+    <color name="xh_primary">#0E7490</color>
+    <color name="xh_primary_dark">#155E75</color>
+    <color name="xh_secondary">#0F766E</color>
+    <color name="xh_secondary_dark">#115E59</color>
+
+    <color name="xh_surface">#F9FBFD</color>
+    <color name="xh_header_card">#E6F6FB</color>
+    <color name="xh_header_stroke">#B7E3F2</color>
+    <color name="xh_card_stroke">#D6E5EE</color>
+    <color name="xh_input_bg">#EAF2F7</color>
+
+    <color name="xh_text_primary">#163142</color>
+    <color name="xh_text_secondary">#4A6675</color>
+
+    <color name="xh_chip_text">#0F3E52</color>
+    <color name="xh_topic_chip_bg">#D8EEF8</color>
+    <color name="xh_status_chip_bg">#DFEEF9</color>
+
+    <color name="xh_log_bg">#112531</color>
+    <color name="xh_log_text">#CDE8F5</color>
+
+    <color name="xh_online">#0F9D58</color>
+    <color name="xh_offline">#D64545</color>
+    <color name="xh_control_on">#15803D</color>
+    <color name="xh_control_off">#0E7490</color>
+    <color name="xh_control_disabled">#9AAEBB</color>
+</resources>

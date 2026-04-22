@@ -1,9 +1,12 @@
 <resources>
     <style name="Theme.XiaoHeiApp" parent="Theme.MaterialComponents.Light.NoActionBar">
-        <item name="colorPrimary">#1565C0</item>
-        <item name="colorPrimaryVariant">#003C8F</item>
-        <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="colorSecondary">#2E7D32</item>
-        <item name="android:statusBarColor">#003C8F</item>
+        <item name="colorPrimary">@color/xh_primary</item>
+        <item name="colorPrimaryVariant">@color/xh_primary_dark</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">@color/xh_secondary</item>
+        <item name="colorSecondaryVariant">@color/xh_secondary_dark</item>
+        <item name="colorOnSecondary">@android:color/white</item>
+        <item name="android:statusBarColor">@color/xh_primary_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

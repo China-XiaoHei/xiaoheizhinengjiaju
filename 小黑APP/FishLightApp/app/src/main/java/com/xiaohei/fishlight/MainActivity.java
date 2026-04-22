@@ -1,6 +1,7 @@
 package com.xiaohei.fishlight;
 
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,6 +13,7 @@ import android.widget.RadioGroup;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -90,7 +92,7 @@ public class MainActivity extends AppCompatActivity {
         setupCloudClient();
         setupActions();
 
-        tvTopicRoot.setText(CloudMqttClient.TOPIC_ROOT);
+        tvTopicRoot.setText("主题: " + CloudMqttClient.TOPIC_ROOT);
         appendLog("APP 已启动，等待设备状态同步。");
         refreshUi();
     }
@@ -403,7 +405,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshUi() {
-        String modeText = isLocalMode() ? "当前模式: ESP 本地网络" : "当前模式: 云端 MQTT";
+        String modeText = isLocalMode() ? "当前模式：ESP 本地网络" : "当前模式：云端 MQTT";
         tvModeStatus.setText(modeText);
 
         String cloudText = brokerConnected
@@ -413,25 +415,51 @@ public class MainActivity extends AppCompatActivity {
 
         boolean channelOnline = isLocalMode() ? localReachable : (brokerConnected && cloudDeviceOnline);
         tvDeviceStatus.setText(channelOnline ? "设备在线" : "设备离线");
+        tvDeviceStatus.setTextColor(color(channelOnline ? R.color.xh_online : R.color.xh_offline));
 
         if (!state.known) {
-            tvLightStatus.setText("鱼缸照明: 未知");
-            tvPumpStatus.setText("鱼泵状态: 未知");
-            tvMasterStatus.setText("总开关: 未知");
-            tvOverallStatus.setText("设备总状态: 未知");
-            tvSource.setText("最后来源: 未知");
+            tvLightStatus.setText("鱼缸照明：未知");
+            tvPumpStatus.setText("鱼泵状态：未知");
+            tvMasterStatus.setText("总开关：未知");
+            tvOverallStatus.setText("设备总状态：未知");
+            tvSource.setText("最后来源：未知");
         } else {
-            tvLightStatus.setText("鱼缸照明: " + (state.light ? "打开" : "关闭"));
-            tvPumpStatus.setText("鱼泵状态: " + (state.pump ? "打开" : "关闭"));
-            tvMasterStatus.setText("总开关: " + (state.masterSwitch ? "打开" : "关闭"));
-            tvOverallStatus.setText("设备总状态: " + (state.overall ? "运行中" : "已停止"));
-            tvSource.setText("最后来源: " + state.source);
+            tvLightStatus.setText("鱼缸照明：" + (state.light ? "打开" : "关闭"));
+            tvPumpStatus.setText("鱼泵状态：" + (state.pump ? "打开" : "关闭"));
+            tvMasterStatus.setText("总开关：" + (state.masterSwitch ? "打开" : "关闭"));
+            tvOverallStatus.setText("设备总状态：" + (state.overall ? "运行中" : "已停止"));
+            tvSource.setText("最后来源：" + state.source);
         }
 
         btnLight.setText(state.known && state.light ? "关闭照明" : "打开照明");
         btnPump.setText(state.known && state.pump ? "关闭鱼泵" : "打开鱼泵");
+        applyControlButtonStyles(channelOnline);
 
         renderLogs();
+    }
+
+    private void applyControlButtonStyles(boolean channelOnline) {
+        boolean canControl = isLocalMode() ? !TextUtils.isEmpty(getLocalBaseUrl()) : brokerConnected;
+        btnLight.setEnabled(canControl);
+        btnPump.setEnabled(canControl);
+
+        int lightColor;
+        int pumpColor;
+        if (!canControl) {
+            lightColor = color(R.color.xh_control_disabled);
+            pumpColor = color(R.color.xh_control_disabled);
+        } else {
+            lightColor = color(state.known && state.light ? R.color.xh_control_on : R.color.xh_control_off);
+            pumpColor = color(state.known && state.pump ? R.color.xh_control_on : R.color.xh_control_off);
+        }
+
+        btnLight.setBackgroundTintList(ColorStateList.valueOf(lightColor));
+        btnPump.setBackgroundTintList(ColorStateList.valueOf(pumpColor));
+        btnLight.setTextColor(color(android.R.color.white));
+        btnPump.setTextColor(color(android.R.color.white));
+        float alpha = channelOnline ? 1.0f : 0.92f;
+        btnLight.setAlpha(alpha);
+        btnPump.setAlpha(alpha);
     }
 
     private void appendLog(String text) {
@@ -461,7 +489,7 @@ public class MainActivity extends AppCompatActivity {
     private void loadPrefs() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String mode = prefs.getString(KEY_MODE, MODE_CLOUD);
-        String localUrl = prefs.getString(KEY_LOCAL_URL, "http://192.168.1.100");
+        String localUrl = prefs.getString(KEY_LOCAL_URL, "http://192.168.3.26");
         etLocalUrl.setText(localUrl);
         if (MODE_LOCAL.equals(mode)) {
             rbLocal.setChecked(true);
@@ -484,6 +512,10 @@ public class MainActivity extends AppCompatActivity {
             return "未知错误";
         }
         return e.getMessage();
+    }
+
+    private int color(int colorResId) {
+        return ContextCompat.getColor(this, colorResId);
     }
 
     private static final class DeviceState {
