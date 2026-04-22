@@ -45,6 +45,14 @@
 #define AP_PASSWORD "12345678"
 #endif
 
+#ifndef HOME_WIFI_SSID
+#define HOME_WIFI_SSID ""
+#endif
+
+#ifndef HOME_WIFI_PASSWORD
+#define HOME_WIFI_PASSWORD ""
+#endif
+
 namespace {
 
 constexpr size_t STM32_BUFFER_SIZE = 160;
@@ -52,7 +60,9 @@ constexpr uint32_t MQTT_RECONNECT_INTERVAL_MS = 5000;
 constexpr uint32_t STATE_QUERY_INTERVAL_IDLE_MS = 3000;
 constexpr uint32_t STATE_QUERY_INTERVAL_KEEPALIVE_MS = 12000;
 constexpr uint32_t STATUS_LED_BLINK_MS = 500;
+constexpr uint32_t HOME_WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr char DEVICE_NAME[] = "鱼缸照明";
+constexpr char LOCAL_AP_SSID[] = u8"ESP小黑";
 
 SoftwareSerial stm32Serial(STM32_RX_PIN, STM32_TX_PIN);
 WiFiClient wifiClient;
@@ -417,6 +427,20 @@ void ensureStateSync() {
   }
 }
 
+bool connectHomeWifiFirst() {
+  if (strlen(HOME_WIFI_SSID) == 0) {
+    return false;
+  }
+
+  WiFi.begin(HOME_WIFI_SSID, HOME_WIFI_PASSWORD);
+  unsigned long startMs = millis();
+  while (WiFi.status() != WL_CONNECTED &&
+         (millis() - startMs) < HOME_WIFI_CONNECT_TIMEOUT_MS) {
+    delay(300);
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
 }  // namespace
 
 void setup() {
@@ -439,12 +463,16 @@ void setup() {
   mqttClient.setBufferSize(384);
 
   WiFi.mode(WIFI_STA);
+  bool homeWifiOk = connectHomeWifiFirst();
+
   wifiManager.setConfigPortalTimeout(180);
   wifiManager.setConfigPortalBlocking(true);
-  bool wifiOk = wifiManager.autoConnect(AP_SSID, AP_PASSWORD);
-  if (!wifiOk) {
-    delay(1000);
-    ESP.restart();
+  if (!homeWifiOk) {
+    bool wifiOk = wifiManager.autoConnect(LOCAL_AP_SSID, AP_PASSWORD);
+    if (!wifiOk) {
+      delay(1000);
+      ESP.restart();
+    }
   }
 
   setupHttpServer();
