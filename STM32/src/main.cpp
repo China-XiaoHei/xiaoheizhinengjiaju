@@ -48,6 +48,7 @@ constexpr uint32_t INPUT_DEBOUNCE_MS = 35;
 constexpr uint32_t DISPLAY_REFRESH_MS = 250;
 constexpr uint32_t STATE_HEARTBEAT_MS = 2000;
 constexpr uint32_t ESP_LINK_TIMEOUT_MS = 8000;
+constexpr uint32_t BUTTON_SHORT_PRESS_MIN_MS = 20;
 constexpr size_t RX_BUFFER_SIZE = 128;
 
 constexpr uint8_t OLED_SCL_PIN = PB10;
@@ -80,6 +81,8 @@ struct DebouncedInput {
 
 DebouncedInput masterSwitchInput{};
 DebouncedInput lightButtonInput{};
+bool lightButtonPressed = false;
+uint32_t lightButtonPressStartMs = 0;
 
 void oledSclSet(bool level) {
   digitalWrite(OLED_SCL_PIN, level ? HIGH : LOW);
@@ -541,7 +544,14 @@ void loop() {
 
   if (updateDebounced(lightButtonInput, readInputActive(LIGHT_BUTTON_PIN), nowMs, INPUT_DEBOUNCE_MS)) {
     if (lightButtonInput.stable) {
-      applyLightButtonClick();
+      lightButtonPressed = true;
+      lightButtonPressStartMs = nowMs;
+    } else if (lightButtonPressed) {
+      uint32_t pressDurationMs = nowMs - lightButtonPressStartMs;
+      if (pressDurationMs >= BUTTON_SHORT_PRESS_MIN_MS) {
+        applyLightButtonClick();
+      }
+      lightButtonPressed = false;
     }
   }
 
