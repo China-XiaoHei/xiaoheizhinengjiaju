@@ -1,5 +1,6 @@
 #include <Arduino.h>
-#include <U8g2lib.h>
+#include <cstdio>
+#include <cstring>
 
 #ifndef SERIAL_BAUD
 #define SERIAL_BAUD 57600
@@ -44,12 +45,19 @@
 namespace {
 
 constexpr uint32_t INPUT_DEBOUNCE_MS = 35;
-constexpr uint32_t DISPLAY_REFRESH_MS = 200;
+constexpr uint32_t DISPLAY_REFRESH_MS = 250;
 constexpr uint32_t STATE_HEARTBEAT_MS = 2000;
 constexpr uint32_t ESP_LINK_TIMEOUT_MS = 8000;
 constexpr size_t RX_BUFFER_SIZE = 128;
 
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C oled(U8G2_R0, PB10, PB11, U8X8_PIN_NONE);
+constexpr uint8_t OLED_SCL_PIN = PB10;
+constexpr uint8_t OLED_SDA_PIN = PB11;
+constexpr uint8_t OLED_ADDR_8BIT_3C = 0x78;  // 0x3C << 1
+constexpr uint8_t OLED_ADDR_8BIT_3D = 0x7A;  // 0x3D << 1
+constexpr uint8_t OLED_PAGES = 8;
+constexpr uint8_t OLED_WIDTH = 128;
+
+uint8_t oledGram[OLED_PAGES][OLED_WIDTH];
 
 char rxBuffer[RX_BUFFER_SIZE];
 size_t rxLength = 0;
@@ -72,6 +80,239 @@ struct DebouncedInput {
 
 DebouncedInput masterSwitchInput{};
 DebouncedInput lightButtonInput{};
+
+void oledSclSet(bool level) {
+  digitalWrite(OLED_SCL_PIN, level ? HIGH : LOW);
+}
+
+void oledSdaSet(bool level) {
+  digitalWrite(OLED_SDA_PIN, level ? HIGH : LOW);
+}
+
+void oledI2CDelay() {
+  delayMicroseconds(3);
+}
+
+void oledI2CStart() {
+  oledSdaSet(true);
+  oledSclSet(true);
+  oledI2CDelay();
+  oledSdaSet(false);
+  oledI2CDelay();
+  oledSclSet(false);
+}
+
+void oledI2CStop() {
+  oledSdaSet(false);
+  oledSclSet(true);
+  oledI2CDelay();
+  oledSdaSet(true);
+  oledI2CDelay();
+}
+
+void oledI2CSendByte(uint8_t byteValue) {
+  for (uint8_t i = 0; i < 8; i++) {
+    oledSdaSet((byteValue & 0x80U) != 0U);
+    oledSclSet(true);
+    oledI2CDelay();
+    oledSclSet(false);
+    oledI2CDelay();
+    byteValue <<= 1;
+  }
+
+  // Ignore ACK for robustness with different module variants.
+  oledSdaSet(true);
+  oledSclSet(true);
+  oledI2CDelay();
+  oledSclSet(false);
+}
+
+void oledWriteCommandToAddr(uint8_t addr8bit, uint8_t cmd) {
+  oledI2CStart();
+  oledI2CSendByte(addr8bit);
+  oledI2CSendByte(0x00);
+  oledI2CSendByte(cmd);
+  oledI2CStop();
+}
+
+void oledWriteDataToAddr(uint8_t addr8bit, uint8_t data) {
+  oledI2CStart();
+  oledI2CSendByte(addr8bit);
+  oledI2CSendByte(0x40);
+  oledI2CSendByte(data);
+  oledI2CStop();
+}
+
+void oledWriteCommandAll(uint8_t cmd) {
+  oledWriteCommandToAddr(OLED_ADDR_8BIT_3C, cmd);
+  oledWriteCommandToAddr(OLED_ADDR_8BIT_3D, cmd);
+}
+
+void oledWriteDataAll(uint8_t data) {
+  oledWriteDataToAddr(OLED_ADDR_8BIT_3C, data);
+  oledWriteDataToAddr(OLED_ADDR_8BIT_3D, data);
+}
+
+void oledClearBuffer() {
+  memset(oledGram, 0, sizeof(oledGram));
+}
+
+void oledRefresh() {
+  for (uint8_t page = 0; page < OLED_PAGES; page++) {
+    oledWriteCommandAll(static_cast<uint8_t>(0xB0U + page));
+    oledWriteCommandAll(0x10);
+    oledWriteCommandAll(0x00);
+    for (uint8_t col = 0; col < OLED_WIDTH; col++) {
+      oledWriteDataAll(oledGram[page][col]);
+    }
+  }
+}
+
+void oledDrawPixel(uint8_t x, uint8_t y) {
+  if (x >= OLED_WIDTH || y >= 64) {
+    return;
+  }
+  oledGram[y / 8U][x] |= static_cast<uint8_t>(1U << (y % 8U));
+}
+
+const uint8_t *glyphForChar(char c) {
+  static const uint8_t SPACE[5] = {0x00, 0x00, 0x00, 0x00, 0x00};
+  static const uint8_t COLON[5] = {0x00, 0x36, 0x36, 0x00, 0x00};
+  static const uint8_t DASH[5] = {0x08, 0x08, 0x08, 0x08, 0x08};
+  static const uint8_t SLASH[5] = {0x20, 0x10, 0x08, 0x04, 0x02};
+  static const uint8_t UNDERSCORE[5] = {0x40, 0x40, 0x40, 0x40, 0x40};
+
+  static const uint8_t D0[5] = {0x3E, 0x51, 0x49, 0x45, 0x3E};
+  static const uint8_t D1[5] = {0x00, 0x42, 0x7F, 0x40, 0x00};
+  static const uint8_t D2[5] = {0x42, 0x61, 0x51, 0x49, 0x46};
+  static const uint8_t D3[5] = {0x21, 0x41, 0x45, 0x4B, 0x31};
+  static const uint8_t D4[5] = {0x18, 0x14, 0x12, 0x7F, 0x10};
+  static const uint8_t D5[5] = {0x27, 0x45, 0x45, 0x45, 0x39};
+  static const uint8_t D6[5] = {0x3C, 0x4A, 0x49, 0x49, 0x30};
+  static const uint8_t D7[5] = {0x01, 0x71, 0x09, 0x05, 0x03};
+  static const uint8_t D8[5] = {0x36, 0x49, 0x49, 0x49, 0x36};
+  static const uint8_t D9[5] = {0x06, 0x49, 0x49, 0x29, 0x1E};
+
+  static const uint8_t A[5] = {0x7E, 0x11, 0x11, 0x11, 0x7E};
+  static const uint8_t B[5] = {0x7F, 0x49, 0x49, 0x49, 0x36};
+  static const uint8_t C[5] = {0x3E, 0x41, 0x41, 0x41, 0x22};
+  static const uint8_t D[5] = {0x7F, 0x41, 0x41, 0x22, 0x1C};
+  static const uint8_t E[5] = {0x7F, 0x49, 0x49, 0x49, 0x41};
+  static const uint8_t F[5] = {0x7F, 0x09, 0x09, 0x09, 0x01};
+  static const uint8_t G[5] = {0x3E, 0x41, 0x49, 0x49, 0x7A};
+  static const uint8_t H[5] = {0x7F, 0x08, 0x08, 0x08, 0x7F};
+  static const uint8_t I[5] = {0x00, 0x41, 0x7F, 0x41, 0x00};
+  static const uint8_t J[5] = {0x20, 0x40, 0x41, 0x3F, 0x01};
+  static const uint8_t K[5] = {0x7F, 0x08, 0x14, 0x22, 0x41};
+  static const uint8_t L[5] = {0x7F, 0x40, 0x40, 0x40, 0x40};
+  static const uint8_t M[5] = {0x7F, 0x02, 0x0C, 0x02, 0x7F};
+  static const uint8_t N[5] = {0x7F, 0x04, 0x08, 0x10, 0x7F};
+  static const uint8_t O[5] = {0x3E, 0x41, 0x41, 0x41, 0x3E};
+  static const uint8_t P[5] = {0x7F, 0x09, 0x09, 0x09, 0x06};
+  static const uint8_t Q[5] = {0x3E, 0x41, 0x51, 0x21, 0x5E};
+  static const uint8_t R[5] = {0x7F, 0x09, 0x19, 0x29, 0x46};
+  static const uint8_t S[5] = {0x46, 0x49, 0x49, 0x49, 0x31};
+  static const uint8_t T[5] = {0x01, 0x01, 0x7F, 0x01, 0x01};
+  static const uint8_t U[5] = {0x3F, 0x40, 0x40, 0x40, 0x3F};
+  static const uint8_t V[5] = {0x1F, 0x20, 0x40, 0x20, 0x1F};
+  static const uint8_t W[5] = {0x7F, 0x20, 0x18, 0x20, 0x7F};
+  static const uint8_t X[5] = {0x63, 0x14, 0x08, 0x14, 0x63};
+  static const uint8_t Y[5] = {0x07, 0x08, 0x70, 0x08, 0x07};
+  static const uint8_t Z[5] = {0x61, 0x51, 0x49, 0x45, 0x43};
+
+  if (c >= 'a' && c <= 'z') {
+    c = static_cast<char>(c - 'a' + 'A');
+  }
+
+  switch (c) {
+    case ' ': return SPACE;
+    case ':': return COLON;
+    case '-': return DASH;
+    case '/': return SLASH;
+    case '_': return UNDERSCORE;
+    case '0': return D0;
+    case '1': return D1;
+    case '2': return D2;
+    case '3': return D3;
+    case '4': return D4;
+    case '5': return D5;
+    case '6': return D6;
+    case '7': return D7;
+    case '8': return D8;
+    case '9': return D9;
+    case 'A': return A;
+    case 'B': return B;
+    case 'C': return C;
+    case 'D': return D;
+    case 'E': return E;
+    case 'F': return F;
+    case 'G': return G;
+    case 'H': return H;
+    case 'I': return I;
+    case 'J': return J;
+    case 'K': return K;
+    case 'L': return L;
+    case 'M': return M;
+    case 'N': return N;
+    case 'O': return O;
+    case 'P': return P;
+    case 'Q': return Q;
+    case 'R': return R;
+    case 'S': return S;
+    case 'T': return T;
+    case 'U': return U;
+    case 'V': return V;
+    case 'W': return W;
+    case 'X': return X;
+    case 'Y': return Y;
+    case 'Z': return Z;
+    default: return SPACE;
+  }
+}
+
+void oledDrawChar5x7(uint8_t x, uint8_t y, char c) {
+  const uint8_t *glyph = glyphForChar(c);
+  for (uint8_t col = 0; col < 5; col++) {
+    for (uint8_t row = 0; row < 7; row++) {
+      if ((glyph[col] & static_cast<uint8_t>(1U << row)) != 0U) {
+        oledDrawPixel(static_cast<uint8_t>(x + col), static_cast<uint8_t>(y + row));
+      }
+    }
+  }
+}
+
+void oledDrawText5x7(uint8_t x, uint8_t y, const char *text) {
+  while (*text != '\0' && x < 122U) {
+    oledDrawChar5x7(x, y, *text);
+    x = static_cast<uint8_t>(x + 6U);
+    text++;
+  }
+}
+
+void oledInit() {
+  pinMode(OLED_SCL_PIN, OUTPUT);
+  pinMode(OLED_SDA_PIN, OUTPUT);
+  oledSclSet(true);
+  oledSdaSet(true);
+  delay(60);
+
+  const uint8_t initCmds[] = {
+      0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+      0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1,
+      0xDB, 0x30, 0xA4, 0xA6, 0x8D, 0x14, 0xAF};
+
+  for (uint8_t cmd : initCmds) {
+    oledWriteCommandAll(cmd);
+  }
+
+  // Power-on diagnostic: entire display ON, then back to RAM.
+  oledWriteCommandAll(0xA5);
+  delay(300);
+  oledWriteCommandAll(0xA4);
+
+  oledClearBuffer();
+  oledRefresh();
+}
 
 bool readInputActive(uint8_t pin) {
   return digitalRead(pin) == INPUT_ACTIVE_LEVEL;
@@ -133,30 +374,51 @@ void sendState(const char *source, bool forceSourceUpdate) {
   lastHeartbeatMs = millis();
 }
 
-void drawDisplay() {
-  char line1[32];
-  char line2[32];
-  char line3[32];
-  char line4[32];
-  char line5[32];
-  char line6[32];
+void normalizeSource(char *dst, size_t dstSize, const char *src) {
+  if (dstSize == 0) {
+    return;
+  }
+  size_t i = 0;
+  while (src[i] != '\0' && i < (dstSize - 1U)) {
+    char c = src[i];
+    if (c >= 'a' && c <= 'z') {
+      c = static_cast<char>(c - 'a' + 'A');
+    }
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '/')) {
+      c = '-';
+    }
+    dst[i] = c;
+    i++;
+  }
+  dst[i] = '\0';
+}
 
-  snprintf(line1, sizeof(line1), "XiaoHei Aquarium");
+void drawDisplay() {
+  char line1[22];
+  char line2[22];
+  char line3[22];
+  char line4[22];
+  char line5[22];
+  char line6[22];
+  char srcShort[11];
+
+  normalizeSource(srcShort, sizeof(srcShort), lastSource);
+
+  snprintf(line1, sizeof(line1), "XIAOHEI AQUA");
   snprintf(line2, sizeof(line2), "LIGHT : %s", lightOn ? "ON" : "OFF");
   snprintf(line3, sizeof(line3), "PUMP  : %s", pumpOn ? "ON" : "OFF");
   snprintf(line4, sizeof(line4), "MASTER: %s", masterSwitchOn ? "ON" : "OFF");
   snprintf(line5, sizeof(line5), "NET   : %s", espOnline() ? "ONLINE" : "WAIT");
-  snprintf(line6, sizeof(line6), "SRC   : %s", lastSource);
+  snprintf(line6, sizeof(line6), "SRC   : %s", srcShort);
 
-  oled.clearBuffer();
-  oled.setFont(u8g2_font_5x8_tr);
-  oled.drawStr(0, 8, line1);
-  oled.drawStr(0, 18, line2);
-  oled.drawStr(0, 28, line3);
-  oled.drawStr(0, 38, line4);
-  oled.drawStr(0, 48, line5);
-  oled.drawStr(0, 58, line6);
-  oled.sendBuffer();
+  oledClearBuffer();
+  oledDrawText5x7(0, 0, line1);
+  oledDrawText5x7(0, 10, line2);
+  oledDrawText5x7(0, 20, line3);
+  oledDrawText5x7(0, 30, line4);
+  oledDrawText5x7(0, 40, line5);
+  oledDrawText5x7(0, 50, line6);
+  oledRefresh();
 }
 
 bool updateDebounced(DebouncedInput &input,
@@ -341,7 +603,7 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   Serial1.begin(ESP_UART_BAUD);
 
-  oled.begin();
+  oledInit();
 
   uint32_t nowMs = millis();
   masterSwitchInput.raw = readInputActive(MASTER_SWITCH_PIN);
