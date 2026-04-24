@@ -31,6 +31,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -41,19 +42,29 @@ public class MainActivity extends AppCompatActivity {
     private static final String MODE_LOCAL = "LOCAL";
     private static final int MAX_LOG_LINES = 14;
     private static final long LOCAL_POLL_MS = 3500L;
+    private static final long CLOUD_REFRESH_TIMEOUT_MS = 4500L;
     private static final int HTTP_TIMEOUT_MS = 3500;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService networkExecutor = Executors.newFixedThreadPool(2);
     private final ArrayDeque<String> logs = new ArrayDeque<>();
+    private final AtomicBoolean localFetchInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean cloudQueryInFlight = new AtomicBoolean(false);
 
     private final Runnable localPollRunnable = new Runnable() {
         @Override
         public void run() {
             if (isLocalMode()) {
-                fetchLocalStateAsync(false);
+                fetchLocalStateAsync(false, false);
             }
             uiHandler.postDelayed(this, LOCAL_POLL_MS);
+        }
+    };
+
+    private final Runnable cloudRefreshTimeoutRunnable = () -> {
+        if (cloudQueryInFlight.getAndSet(false)) {
+            appendLog("云端刷新等待超时，当前显示最近一次收到的状态。");
+            refreshUi();
         }
     };
 
@@ -79,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean brokerConnected = false;
     private boolean cloudDeviceOnline = false;
     private boolean localReachable = false;
+    private boolean pendingCloudRefreshAfterConnect = false;
 
     private final DeviceState state = new DeviceState();
 
@@ -103,13 +115,14 @@ public class MainActivity extends AppCompatActivity {
         cloudClient.start();
         uiHandler.removeCallbacks(localPollRunnable);
         uiHandler.post(localPollRunnable);
-        queryByCurrentMode();
+        queryByCurrentMode(false);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         uiHandler.removeCallbacks(localPollRunnable);
+        uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
         cloudClient.stop();
         savePrefs();
     }
@@ -149,8 +162,10 @@ public class MainActivity extends AppCompatActivity {
                 brokerConnected = true;
                 appendLog("云端 Broker 已连接。");
                 refreshUi();
-                if (!isLocalMode()) {
-                    queryCloudState();
+
+                if (!isLocalMode() || pendingCloudRefreshAfterConnect) {
+                    pendingCloudRefreshAfterConnect = false;
+                    queryCloudState(false);
                 }
             }
 
@@ -158,12 +173,19 @@ public class MainActivity extends AppCompatActivity {
             public void onDisconnected(String reason) {
                 brokerConnected = false;
                 cloudDeviceOnline = false;
+                uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
+                cloudQueryInFlight.set(false);
                 appendLog("云端连接断开: " + reason);
                 refreshUi();
             }
 
             @Override
             public void onStateMessage(String payload) {
+                if (cloudQueryInFlight.getAndSet(false)) {
+                    uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
+                    appendLog("云端状态已刷新。");
+                }
+
                 try {
                     JSONObject object = new JSONObject(payload);
                     applyStateFromJson(object, "cloud");
@@ -185,10 +207,10 @@ public class MainActivity extends AppCompatActivity {
         rgMode.setOnCheckedChangeListener((group, checkedId) -> {
             refreshUi();
             savePrefs();
-            queryByCurrentMode();
+            queryByCurrentMode(false);
         });
 
-        btnRefresh.setOnClickListener(v -> queryByCurrentMode());
+        btnRefresh.setOnClickListener(v -> queryByCurrentMode(true));
 
         btnLight.setOnClickListener(v -> {
             String action = state.known ? (state.light ? "OFF" : "ON") : "TOGGLE";
@@ -201,28 +223,59 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void queryByCurrentMode() {
+    private void queryByCurrentMode(boolean manual) {
         if (isLocalMode()) {
-            fetchLocalStateAsync(true);
+            fetchLocalStateAsync(true, manual);
         } else {
-            queryCloudState();
+            queryCloudState(manual);
         }
     }
 
-    private void queryCloudState() {
+    private void queryCloudState(boolean manual) {
+        if (!brokerConnected) {
+            pendingCloudRefreshAfterConnect = true;
+            if (manual) {
+                appendLog("云端未连接，正在尝试重连并刷新。");
+            }
+            cloudClient.stop();
+            cloudClient.start();
+            refreshUi();
+            return;
+        }
+
+        if (!cloudQueryInFlight.compareAndSet(false, true)) {
+            if (manual) {
+                appendLog("云端刷新进行中，请稍候。");
+            }
+            refreshUi();
+            return;
+        }
+
+        uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
+        uiHandler.postDelayed(cloudRefreshTimeoutRunnable, CLOUD_REFRESH_TIMEOUT_MS);
+
         networkExecutor.execute(() -> {
             try {
                 boolean ok = cloudClient.publishCommand("QUERY", "QUERY");
                 uiHandler.post(() -> {
                     if (ok) {
-                        appendLog("已请求云端刷新状态。");
+                        if (manual) {
+                            appendLog("已发送云端刷新请求。");
+                        }
                     } else {
-                        appendLog("云端未连接，无法请求状态。");
+                        uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
+                        cloudQueryInFlight.set(false);
+                        appendLog("云端暂不可用，刷新请求未发送。");
                     }
                     refreshUi();
                 });
             } catch (Exception e) {
-                uiHandler.post(() -> appendLog("云端请求失败: " + safeMessage(e)));
+                uiHandler.post(() -> {
+                    uiHandler.removeCallbacks(cloudRefreshTimeoutRunnable);
+                    cloudQueryInFlight.set(false);
+                    appendLog("云端刷新失败: " + safeMessage(e));
+                    refreshUi();
+                });
             }
         });
     }
@@ -272,7 +325,7 @@ public class MainActivity extends AppCompatActivity {
                         localReachable = true;
                         appendLog("本地下发成功: " + target + " -> " + action);
                         refreshUi();
-                        uiHandler.postDelayed(() -> fetchLocalStateAsync(false), 500);
+                        uiHandler.postDelayed(() -> fetchLocalStateAsync(false, false), 500);
                     } else {
                         localReachable = false;
                         appendLog("本地下发失败: " + result.error);
@@ -289,13 +342,21 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void fetchLocalStateAsync(boolean logWhenSuccess) {
+    private void fetchLocalStateAsync(boolean logWhenSuccess, boolean manual) {
         final String baseUrl = getLocalBaseUrl();
         if (TextUtils.isEmpty(baseUrl)) {
-            if (logWhenSuccess) {
+            if (manual || logWhenSuccess) {
                 appendLog("请先填写本地 ESP 地址。");
             }
             localReachable = false;
+            refreshUi();
+            return;
+        }
+
+        if (!localFetchInFlight.compareAndSet(false, true)) {
+            if (manual) {
+                appendLog("本地刷新进行中，请稍候。");
+            }
             refreshUi();
             return;
         }
@@ -310,16 +371,19 @@ public class MainActivity extends AppCompatActivity {
                 uiHandler.post(() -> {
                     localReachable = true;
                     applyStateFromJson(object, "local");
-                    if (logWhenSuccess) {
-                        appendLog("本地状态已同步。");
+                    if (manual || logWhenSuccess) {
+                        appendLog("本地状态已刷新。");
                     }
+                    localFetchInFlight.set(false);
+                    refreshUi();
                 });
             } catch (Exception e) {
                 uiHandler.post(() -> {
                     localReachable = false;
-                    if (logWhenSuccess) {
+                    if (manual || logWhenSuccess) {
                         appendLog("本地状态获取失败: " + safeMessage(e));
                     }
+                    localFetchInFlight.set(false);
                     refreshUi();
                 });
             }
@@ -433,13 +497,25 @@ public class MainActivity extends AppCompatActivity {
 
         btnLight.setText(state.known && state.light ? "关闭照明" : "打开照明");
         btnPump.setText(state.known && state.pump ? "关闭鱼泵" : "打开鱼泵");
+        updateRefreshButtonState();
         applyControlButtonStyles(channelOnline);
-
         renderLogs();
     }
 
+    private void updateRefreshButtonState() {
+        boolean refreshing = isLocalMode()
+            ? localFetchInFlight.get()
+            : (cloudQueryInFlight.get() || pendingCloudRefreshAfterConnect);
+        btnRefresh.setEnabled(!refreshing);
+        btnRefresh.setText(refreshing ? "刷新中..." : "刷新状态");
+        btnRefresh.setAlpha(refreshing ? 0.8f : 1.0f);
+    }
+
     private void applyControlButtonStyles(boolean channelOnline) {
-        boolean canControl = isLocalMode() ? !TextUtils.isEmpty(getLocalBaseUrl()) : brokerConnected;
+        boolean canControl = isLocalMode()
+            ? localReachable
+            : (brokerConnected && cloudDeviceOnline);
+
         btnLight.setEnabled(canControl);
         btnPump.setEnabled(canControl);
 
