@@ -10,8 +10,10 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
@@ -41,6 +43,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String MODE_CLOUD = "CLOUD";
     private static final String MODE_LOCAL = "LOCAL";
     private static final int MAX_LOG_LINES = 14;
+    private static final String HISTORY_LOG_FILE = "operation_history.log";
+    private static final String LOG_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss";
     private static final long LOCAL_POLL_MS = 3500L;
     private static final long CLOUD_REFRESH_TIMEOUT_MS = 4500L;
     private static final int HTTP_TIMEOUT_MS = 3500;
@@ -83,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
     private RadioButton rbCloud;
     private RadioButton rbLocal;
     private Button btnRefresh;
+    private Button btnHistoryLog;
     private Button btnLight;
     private Button btnPump;
 
@@ -103,6 +108,7 @@ public class MainActivity extends AppCompatActivity {
         loadPrefs();
         setupCloudClient();
         setupActions();
+        loadRecentHistoryIntoMemory();
 
         tvTopicRoot.setText("主题: " + CloudMqttClient.TOPIC_ROOT);
         appendLog("APP 已启动，等待设备状态同步。");
@@ -151,6 +157,7 @@ public class MainActivity extends AppCompatActivity {
         rbCloud = findViewById(R.id.rbCloud);
         rbLocal = findViewById(R.id.rbLocal);
         btnRefresh = findViewById(R.id.btnRefresh);
+        btnHistoryLog = findViewById(R.id.btnHistoryLog);
         btnLight = findViewById(R.id.btnLight);
         btnPump = findViewById(R.id.btnPump);
     }
@@ -211,6 +218,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnRefresh.setOnClickListener(v -> queryByCurrentMode(true));
+        btnHistoryLog.setOnClickListener(v -> showHistoryLogDialog());
 
         btnLight.setOnClickListener(v -> {
             String action = state.known ? (state.light ? "OFF" : "ON") : "TOGGLE";
@@ -391,15 +399,37 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyStateFromJson(JSONObject object, String channel) {
-        state.known = object.optBoolean("known", true);
-        state.light = object.optBoolean("light", false);
-        state.pump = object.optBoolean("pump", false);
-        state.masterSwitch = object.optBoolean("masterSwitch", false);
-        state.overall = object.optBoolean("overall", state.light || state.pump);
-        state.source = object.optString("source", "UNKNOWN");
+        boolean oldKnown = state.known;
+        boolean oldLight = state.light;
+        boolean oldPump = state.pump;
+        boolean oldMasterSwitch = state.masterSwitch;
+        boolean oldOverall = state.overall;
+
+        boolean nextKnown = object.optBoolean("known", true);
+        boolean nextLight = object.optBoolean("light", false);
+        boolean nextPump = object.optBoolean("pump", false);
+        boolean nextMasterSwitch = object.optBoolean("masterSwitch", false);
+        boolean nextOverall = object.optBoolean("overall", nextLight || nextPump);
+        String nextSource = object.optString("source", "UNKNOWN");
+
+        state.known = nextKnown;
+        state.light = nextLight;
+        state.pump = nextPump;
+        state.masterSwitch = nextMasterSwitch;
+        state.overall = nextOverall;
+        state.source = nextSource;
 
         if (!"local".equals(channel)) {
             cloudDeviceOnline = true;
+        }
+
+        boolean stateChanged = !oldKnown
+            || oldLight != state.light
+            || oldPump != state.pump
+            || oldMasterSwitch != state.masterSwitch
+            || oldOverall != state.overall;
+        if (state.known && stateChanged) {
+            appendLog("状态同步(" + channelName(channel) + "): " + describeState());
         }
 
         savePrefs();
@@ -538,12 +568,25 @@ public class MainActivity extends AppCompatActivity {
         btnPump.setAlpha(alpha);
     }
 
+    private String channelName(String channel) {
+        return "local".equals(channel) ? "本地" : "云端";
+    }
+
+    private String describeState() {
+        return "照明" + (state.light ? "打开" : "关闭")
+            + "，鱼泵" + (state.pump ? "打开" : "关闭")
+            + "，总开关" + (state.masterSwitch ? "打开" : "关闭")
+            + "，来源：" + state.source;
+    }
+
     private void appendLog(String text) {
-        String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
-        logs.addLast(time + "  " + text);
+        String time = new SimpleDateFormat(LOG_TIME_PATTERN, Locale.CHINA).format(new Date());
+        String line = time + "  " + text;
+        logs.addLast(line);
         while (logs.size() > MAX_LOG_LINES) {
             logs.removeFirst();
         }
+        appendHistoryLogLine(line);
         renderLogs();
     }
 
@@ -560,6 +603,60 @@ public class MainActivity extends AppCompatActivity {
             builder.append(line);
         }
         tvLog.setText(builder.toString());
+    }
+
+    private void loadRecentHistoryIntoMemory() {
+        String history = readHistoryLog();
+        if (TextUtils.isEmpty(history)) {
+            return;
+        }
+
+        String[] lines = history.split("\\r?\\n");
+        int start = Math.max(0, lines.length - MAX_LOG_LINES);
+        for (int i = start; i < lines.length; i++) {
+            if (!TextUtils.isEmpty(lines[i])) {
+                logs.addLast(lines[i]);
+            }
+        }
+    }
+
+    private void appendHistoryLogLine(String line) {
+        try (java.io.OutputStream outputStream = openFileOutput(HISTORY_LOG_FILE, MODE_APPEND)) {
+            outputStream.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String readHistoryLog() {
+        try {
+            return readAll(openFileInput(HISTORY_LOG_FILE));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private void showHistoryLogDialog() {
+        String history = readHistoryLog();
+        if (TextUtils.isEmpty(history)) {
+            history = "暂无历史日志。";
+        }
+
+        TextView content = new TextView(this);
+        content.setText(history);
+        content.setTextColor(color(R.color.xh_text_primary));
+        content.setTextSize(13);
+        content.setTypeface(android.graphics.Typeface.MONOSPACE);
+        int padding = Math.round(16 * getResources().getDisplayMetrics().density);
+        content.setPadding(padding, padding, padding, padding);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.addView(content);
+
+        new AlertDialog.Builder(this)
+            .setTitle("历史日志")
+            .setView(scrollView)
+            .setPositiveButton("关闭", null)
+            .show();
     }
 
     private void loadPrefs() {

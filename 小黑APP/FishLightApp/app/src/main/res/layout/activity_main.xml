@@ -346,6 +346,22 @@
                     android:textSize="20sp"
                     android:textStyle="bold" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnHistoryLog"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:fontFamily="serif"
+                    android:text="查看历史日志"
+                    android:textAllCaps="false"
+                    app:cornerRadius="14dp"
+                    app:icon="@android:drawable/ic_menu_recent_history"
+                    app:iconPadding="10dp"
+                    app:iconTint="@color/xh_primary"
+                    app:strokeColor="@color/xh_primary"
+                    app:strokeWidth="1dp" />
+
                 <TextView
                     android:id="@+id/tvLog"
                     android:layout_width="match_parent"
