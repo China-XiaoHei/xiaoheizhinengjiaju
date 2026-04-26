@@ -38,11 +38,12 @@ public final class CloudMqttClient {
     public static final String TOPIC_CMD_MASTER = TOPIC_ROOT + "/cmd/master";
     public static final String TOPIC_CMD_QUERY = TOPIC_ROOT + "/cmd/query";
 
-    private static final int CONNECT_TIMEOUT_MS = 3500;
-    private static final int SOCKET_TIMEOUT_MS = 1000;
-    private static final int KEEP_ALIVE_SEC = 45;
-    private static final long PING_INTERVAL_MS = 15000L;
-    private static final long PING_TIMEOUT_MS = 5000L;
+    private static final int CONNECT_TIMEOUT_MS = 5000;
+    private static final int SOCKET_TIMEOUT_MS = 1500;
+    private static final int KEEP_ALIVE_SEC = 120;
+    private static final long PING_INTERVAL_MS = 45000L;
+    private static final long PING_TIMEOUT_MS = 30000L;
+    private static final long PACKET_READ_TIMEOUT_MS = 12000L;
     private static final long RECONNECT_DELAY_MS = 3000L;
 
     private final Listener listener;
@@ -60,6 +61,7 @@ public final class CloudMqttClient {
     private volatile long lastRxMs = 0L;
     private volatile long lastPingMs = 0L;
     private volatile boolean waitingPingResp = false;
+    private volatile boolean stopRequested = false;
     private volatile String activeTransportHost = DEFAULT_HOST;
     private volatile int activeTransportPort = DEFAULT_PORT;
     private volatile boolean usingTls = false;
@@ -74,6 +76,7 @@ public final class CloudMqttClient {
         }
 
         generation++;
+        stopRequested = false;
         connected = false;
         closeSocketQuietly();
 
@@ -84,6 +87,7 @@ public final class CloudMqttClient {
 
     public synchronized void stop() {
         generation++;
+        stopRequested = true;
         connected = false;
         closeSocketQuietly();
         Thread thread = workerThread;
@@ -145,7 +149,9 @@ public final class CloudMqttClient {
                 notifyConnected();
                 readLoop(workerGeneration);
             } catch (Exception e) {
-                notifyDisconnected(e.getMessage() == null ? "cloud disconnected" : e.getMessage());
+                if (isWorkerActive(workerGeneration) && !stopRequested) {
+                    notifyDisconnected(e.getMessage() == null ? "cloud disconnected" : e.getMessage());
+                }
             } finally {
                 connected = false;
                 waitingPingResp = false;
@@ -168,6 +174,8 @@ public final class CloudMqttClient {
     private void connectAndHandshake(int workerGeneration) throws IOException {
         ConnectionTarget target = connectWithFallback();
         Socket nextSocket = target.socket;
+        nextSocket.setKeepAlive(true);
+        nextSocket.setTcpNoDelay(true);
         nextSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
 
         socket = nextSocket;
@@ -273,41 +281,40 @@ public final class CloudMqttClient {
             return null;
         }
 
+        int header;
         try {
-            int header = in.read();
-            if (header < 0) {
-                throw new IOException("broker closed");
-            }
-
-            byte[] lengthBytes = new byte[4];
-            int remainingLength = 0;
-            int multiplier = 1;
-            int lengthCount = 0;
-            while (true) {
-                int value = in.read();
-                if (value < 0) {
-                    throw new IOException("mqtt read length failed");
-                }
-                lengthBytes[lengthCount++] = (byte) value;
-                remainingLength += (value & 0x7F) * multiplier;
-                if ((value & 0x80) == 0) {
-                    break;
-                }
-                multiplier *= 128;
-                if (lengthCount >= 4) {
-                    throw new IOException("invalid mqtt remaining length");
-                }
-            }
-
-            byte[] packet = new byte[1 + lengthCount + remainingLength];
-            packet[0] = (byte) header;
-            System.arraycopy(lengthBytes, 0, packet, 1, lengthCount);
-            readFully(in, packet, 1 + lengthCount, remainingLength);
-            lastRxMs = System.currentTimeMillis();
-            return packet;
+            header = in.read();
         } catch (SocketTimeoutException ignored) {
             return null;
         }
+        if (header < 0) {
+            throw new IOException("broker closed");
+        }
+
+        long packetDeadlineMs = System.currentTimeMillis() + PACKET_READ_TIMEOUT_MS;
+        byte[] lengthBytes = new byte[4];
+        int remainingLength = 0;
+        int multiplier = 1;
+        int lengthCount = 0;
+        while (true) {
+            int value = readByteWithinPacket(in, packetDeadlineMs, "mqtt read length timeout");
+            lengthBytes[lengthCount++] = (byte) value;
+            remainingLength += (value & 0x7F) * multiplier;
+            if ((value & 0x80) == 0) {
+                break;
+            }
+            multiplier *= 128;
+            if (lengthCount >= 4) {
+                throw new IOException("invalid mqtt remaining length");
+            }
+        }
+
+        byte[] packet = new byte[1 + lengthCount + remainingLength];
+        packet[0] = (byte) header;
+        System.arraycopy(lengthBytes, 0, packet, 1, lengthCount);
+        readFully(in, packet, 1 + lengthCount, remainingLength, packetDeadlineMs);
+        lastRxMs = System.currentTimeMillis();
+        return packet;
     }
 
     private void handlePacket(byte[] packet) {
@@ -474,14 +481,34 @@ public final class CloudMqttClient {
         return new int[]{value, count};
     }
 
-    private void readFully(InputStream in, byte[] buffer, int offset, int length) throws IOException {
+    private int readByteWithinPacket(InputStream in, long deadlineMs, String timeoutMessage) throws IOException {
+        while (System.currentTimeMillis() < deadlineMs) {
+            try {
+                int value = in.read();
+                if (value < 0) {
+                    throw new IOException("mqtt read interrupted");
+                }
+                return value;
+            } catch (SocketTimeoutException ignored) {
+            }
+        }
+        throw new IOException(timeoutMessage);
+    }
+
+    private void readFully(InputStream in, byte[] buffer, int offset, int length, long deadlineMs) throws IOException {
         int readTotal = 0;
         while (readTotal < length) {
-            int read = in.read(buffer, offset + readTotal, length - readTotal);
-            if (read < 0) {
-                throw new IOException("mqtt read interrupted");
+            if (System.currentTimeMillis() >= deadlineMs) {
+                throw new IOException("mqtt read body timeout");
             }
-            readTotal += read;
+            try {
+                int read = in.read(buffer, offset + readTotal, length - readTotal);
+                if (read < 0) {
+                    throw new IOException("mqtt read interrupted");
+                }
+                readTotal += read;
+            } catch (SocketTimeoutException ignored) {
+            }
         }
     }
 
